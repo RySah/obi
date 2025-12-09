@@ -17,6 +17,26 @@ File_System :: struct {
     path: string
 }
 
+from :: proc(path: string) -> (system: File_System, err: Error) {
+    system.path = path
+
+    if !os2.exists(system.path) {
+        os2.make_directory(system.path) or_return
+    }
+
+    return system, nil
+}
+
+// Ensure you free `path`
+child :: proc(system: ^File_System, name: string, allocator := context.allocator) -> (child_system: File_System, path: string, err: Error) {
+    context.allocator = allocator
+
+    path = filepath.join({ system.path, name }) or_return
+    child_system = from(path) or_return
+
+    return child_system, path, nil
+}
+
 clear :: proc(system: ^File_System) -> Error {
     os2.remove_all(system.path) or_return
     os2.make_directory(system.path) or_return
