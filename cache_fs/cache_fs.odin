@@ -14,11 +14,26 @@ Error :: union #shared_nil {
 }
 
 File_System :: struct {
-    path: string
+    allocator: mem.Allocator,
+    path: string,
+    owned_strings: [dynamic]string,
+    children: [dynamic]File_System
 }
 
-from :: proc(path: string) -> (system: File_System, err: Error) {
+// This procedure will not destroy its children.
+destroy :: proc(system: ^File_System) -> (err: Error) {
+    context.allocator = system.allocator
+    for &s in system.owned_strings do delete(s)
+    delete(system.owned_strings) or_return
+    delete(system.children) or_return
+    return nil
+}
+
+from :: proc(path: string, allocator: mem.Allocator) -> (system: File_System, err: Error) {
+    system.allocator = allocator
     system.path = path
+    system.owned_strings = make([dynamic]string, system.allocator) or_return
+    system.children = make([dynamic]File_System, system.allocator) or_return
 
     if !os2.exists(system.path) {
         os2.make_directory(system.path) or_return
@@ -27,14 +42,15 @@ from :: proc(path: string) -> (system: File_System, err: Error) {
     return system, nil
 }
 
-// Ensure you free `path`
-child :: proc(system: ^File_System, name: string, allocator := context.allocator) -> (child_system: File_System, path: string, err: Error) {
-    context.allocator = allocator
+child :: proc(system: ^File_System, name: string) -> (child_system: File_System, err: Error) {
+    context.allocator = system.allocator
 
-    path = filepath.join({ system.path, name }) or_return
-    child_system = from(path) or_return
+    path := filepath.join({ system.path, name }) or_return
+    append(&system.owned_strings, path) or_return
+    child_system = from(path, system.allocator) or_return
+    append(&system.children, child_system) or_return
 
-    return child_system, path, nil
+    return child_system, nil
 }
 
 clear :: proc(system: ^File_System) -> Error {
@@ -44,11 +60,12 @@ clear :: proc(system: ^File_System) -> Error {
 }
 
 cachef :: proc(
-    system: ^File_System, 
-    allocator: mem.Allocator, 
+    system: ^File_System,
     format: string,
     args: ..any
 ) -> (path: string, err: Error) {
+    context.allocator = system.allocator
+
     sb := strings.builder_make() or_return
     defer strings.builder_destroy(&sb)
 
@@ -61,6 +78,7 @@ cachef :: proc(
     defer delete(filename)
 
     path = filepath.join({ system.path, filename }) or_return
+    append(&system.owned_strings, path) or_return
 
     if !os2.exists(path) do os2.write_entire_file(path, s) or_return
 
@@ -69,10 +87,11 @@ cachef :: proc(
 
 cache :: proc(
     system: ^File_System, 
-    allocator: mem.Allocator, 
     args: ..any, 
     sep := " "
 ) -> (path: string, err: Error) {
+    context.allocator = system.allocator
+
     sb := strings.builder_make() or_return
     defer strings.builder_destroy(&sb)
 
@@ -85,6 +104,7 @@ cache :: proc(
     defer delete(filename)
 
     path = filepath.join({ system.path, filename }) or_return
+    append(&system.owned_strings, path) or_return
 
     if !os2.exists(path) do os2.write_entire_file(path, s) or_return
 
