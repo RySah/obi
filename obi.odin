@@ -8,6 +8,7 @@ import "core:time"
 import "core:terminal"
 import "core:terminal/ansi"
 import "core:strings"
+import "core:slice"
 
 import "base:runtime"
 
@@ -37,11 +38,16 @@ Error :: union #shared_nil {
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
 DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_api"
 
+Build_Context_Owned_Resources :: struct {
+    s: [dynamic]string,
+    sarr: [dynamic][]string
+}
+
 Build_Context :: struct {
     // Context allocator
     allocator: Allocator,
-    // Collection of strings owned by `allocator`, by which will be freed on deconstruction
-    owned_strings: [dynamic]string,
+    // Collection of resources owned by `allocator`, by which will be freed on deconstruction
+    owned_resources: Build_Context_Owned_Resources,
     // The cache file system.
     cache_file_system: Cache_File_System,
     // Collection of contextual `C_Import_Info` objects, by which is freed on deconstruction.
@@ -51,11 +57,11 @@ Build_Context :: struct {
     c_import_output_path: string,
     // Collection of commands to run before anything is built.  
     // **NOTE:** You may use the collection and directly to add `Shell_Command`, but **ENSURE** the lifetime of the contents of `Shell_Command` is the same as or longer
-    // than that off the owning `Build_Context`, otherwise undefined behaviour.
+    // than that off the owning `Build_Context`, otherwise undefined behaviour. A **safer** approach is to use the `add_pre_build_shell_command` procedure.
     pre_build: [dynamic]Shell_Command,
     // Collection of commands to run after everything is built.  
     // **NOTE:** You may use the collection and directly to add `Shell_Command`, but **ENSURE** the lifetime of the contents of `Shell_Command` is the same as or longer
-    // than that off the owning `Build_Context`, otherwise undefined behaviour.
+    // than that off the owning `Build_Context`, otherwise undefined behaviour. A **safer** approach is to use the `add_post_build_shell_command` procedure.
     post_build: [dynamic]Shell_Command,
     // Output handle for all respective printing procedures.    
     // **NOTE:** Set to the system stdout (`os.stdout`) by default.
@@ -65,6 +71,38 @@ Build_Context :: struct {
     stderr: os.Handle
 }
 
+@(private="file")
+_own_string :: proc(ctx: ^Build_Context, data: string, clone := false) -> (value: string, err: Allocator_Error) {
+    value = clone ? strings.clone(data, ctx.allocator) or_return : data
+    append(&ctx.owned_resources.s, value) or_return
+    return value, nil
+}
+@(private="file")
+_own_string_array :: proc(ctx: ^Build_Context, data: []string, clone_slice := false, clone_strings := false) -> (value: []string, err: Allocator_Error) {
+    value = clone_slice ? slice.clone(data, ctx.allocator) or_return : data
+    for &s, i in data do value[i] = _own_string(ctx, s, clone=clone_strings) or_return
+    return value, nil
+}
+@(private="file")
+_own :: proc{_own_string, _own_string_array}
+
+@(private="file")
+_init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
+    r.s = make([dynamic]string, allocator) or_return
+    r.sarr = make([dynamic][]string, allocator) or_return
+    return nil
+}
+
+@(private="file")
+_destroy_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
+    for &s in r.sarr do delete(s, allocator) or_return
+    delete(r.sarr) or_return
+
+    for &s in r.s do delete(s, allocator) or_return
+    delete(r.s) or_return
+    return nil
+}
+ 
 /* Creates a `Build_Context`, essential for any builds.
 */
 create_build_context :: proc(
@@ -73,7 +111,7 @@ create_build_context :: proc(
     c_import_output_path := DEFAULT_C_IMPORT_OUTPUT_PATH
 ) -> (ctx: Build_Context, err: Error) {
     ctx.allocator = allocator
-    ctx.owned_strings = make([dynamic]string, ctx.allocator) or_return
+    _init_build_context_owned_resources(&ctx.owned_resources, ctx.allocator) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
     ctx.c_import_output_path = c_import_output_path
@@ -87,8 +125,7 @@ create_build_context :: proc(
 /* Destroy the contents of an `Build_Context` object, essential for memory safety.
 */
 destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
-    for &s in ctx.owned_strings do delete(s, ctx.allocator) or_return
-    delete(ctx.owned_strings) or_return
+    _destroy_build_context_owned_resources(&ctx.owned_resources, ctx.allocator) or_return
 
     cachefs.destroy(&ctx.cache_file_system) or_return
     
@@ -174,8 +211,34 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: Shell_Command) -> (err: Erro
     return nil
 }
 
-add_pre_build_shell_command :: proc(ctx: ^Build_Context, working_dir: string, command: []string, env: Maybe([]string), stdin: ^shell.File) {
+// Clones the shell commands and appends it to the contexts pre build collection. Helping ensure memory safety.
+add_pre_build_shell_command :: proc(ctx: ^Build_Context, cmds: ..Shell_Command) -> Allocator_Error {
+    reserve(&ctx.pre_build, cap(ctx.pre_build)+len(cmds)) or_return
+    for &cmd in cmds {
+        owned_cmd := cmd
+        owned_cmd.working_dir = _own(ctx, owned_cmd.working_dir, clone=true) or_return
+        owned_cmd.command = _own(ctx, owned_cmd.command, clone_slice=true, clone_strings=true) or_return
+        if env, ok := owned_cmd.env.?; ok {
+            owned_cmd.env = _own(ctx, env, clone_slice=true, clone_strings=true) or_return
+        }
+        append(&ctx.pre_build, owned_cmd) or_return
+    }
+    return nil
+}
 
+// Clones the shell commands and appends it to the contexts post build collection. Helping ensure memory safety.
+add_post_build_shell_command :: proc(ctx: ^Build_Context, cmds: ..Shell_Command) -> Allocator_Error {
+    reserve(&ctx.post_build, cap(ctx.post_build)+len(cmds)) or_return
+    for &cmd in cmds {
+        owned_cmd := cmd
+        owned_cmd.working_dir = _own(ctx, owned_cmd.working_dir, clone=true) or_return
+        owned_cmd.command = _own(ctx, owned_cmd.command, clone_slice=true, clone_strings=true) or_return
+        if env, ok := owned_cmd.env.?; ok {
+            owned_cmd.env = _own(ctx, env, clone_slice=true, clone_strings=true) or_return
+        }
+        append(&ctx.post_build, owned_cmd) or_return
+    }
+    return nil
 }
 
 /* Use the `Build_Context` to build the respective project.
@@ -209,7 +272,7 @@ c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..str
     info = ci.make_import_info(&ctx.cache_file_system, ctx.allocator) or_return
     info.package_name = package_name
     info.output_folder = filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
-    append(&ctx.owned_strings, info.output_folder) or_return
+    info.output_folder = _own(ctx, info.output_folder, clone=false) or_return
     append(&ctx.c_import_infos, info) or_return
     c_include(info, ..include_paths) or_return
     return info, nil
