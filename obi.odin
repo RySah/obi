@@ -1,6 +1,7 @@
 package obi
 
 import "core:reflect"
+import "core:os/os2"
 import "core:path/filepath"
 
 import "base:runtime"
@@ -16,6 +17,7 @@ C_Import_Info :: ci.Import_Info
 import cachefs "cache_fs"
 Cache_File_System_Error :: cachefs.Error
 Cache_File_System :: cachefs.File_System
+
 
 Error :: union #shared_nil {
     C_Import_Error,
@@ -63,10 +65,11 @@ destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
     return nil
 }
 
-build :: proc(ctx: ^Build_Context) {
+build :: proc(ctx: ^Build_Context) -> (err: Error) {
     for &info in ctx.c_import_infos {
-        ci.import_info(info, ctx.allocator)
+        ci.import_info(info, ctx.allocator) or_return
     }
+    return nil
 }
 
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
@@ -85,4 +88,3 @@ c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..str
     c_include(info, ..include_paths) or_return
     return info, nil
 }
-
