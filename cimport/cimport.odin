@@ -24,6 +24,8 @@ Import_Info :: struct {
 
     // The package name
     package_name: string,
+    // The output folder for the package
+    output_folder: string,
     // List of files and directories to import
     file_and_dirs: [dynamic]string,
     // Remove this prefix from types names (structs, enums, etc)
@@ -128,7 +130,7 @@ include :: proc(info: ^Import_Info, paths: ..string) -> mem.Allocator_Error {
 // **NOTE**: `function_name_case` is not handled here in the config, provide it as parameter to `bindgen.output`
 as_bindgen_config :: proc(info: ^Import_Info) -> (config: Bindgen_Config, err: Error) {
     config.inputs = info.file_and_dirs[:]
-    config.output_folder = info.package_name
+    config.output_folder = info.output_folder
     config.remove_type_prefix = info.remove_type_prefix
     config.remove_macro_prefix = info.remove_macro_prefix
     config.remove_function_prefix = info.remove_function_prefix
@@ -158,3 +160,9 @@ as_bindgen_config :: proc(info: ^Import_Info) -> (config: Bindgen_Config, err: E
     return config, nil
 }
 
+import_info :: proc(info: ^Import_Info, allocator := context.allocator) -> (err: Error) {
+    context.allocator = allocator
+    config := as_bindgen_config(info) or_return
+    bindgen.run(&config, ".", function_name_case=info.function_name_case) or_return
+    return nil
+}
