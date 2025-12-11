@@ -63,9 +63,9 @@ Build_Context :: struct {
     // Default parent directory for `C_Import_Info` objects.  
     // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_folder` to customize it for that specific object.
     c_import_output_path: string,
-    // Collection of steps to run before anything is built.  
+    // Collection of steps to run before `c_import_infos` are handled.  
     pre_build_steps: [dynamic]Step,
-    // Collection of steps to run after everything is built.  
+    // Collection of steps to run after `c_import_infos` is handled.  
     post_build_steps: [dynamic]Step,
     // Output handle for all respective printing procedures.    
     // **NOTE:** Set to the system stdout (`os.stdout`) by default.
