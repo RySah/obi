@@ -47,6 +47,8 @@ run :: proc(cmd: Command, allocator := context.allocator) -> (state: State, stdo
     }
     defer if free_env do delete(pdesc.env)
     pdesc.stdin = cmd.stdin
+    pdesc.stdout = nil
+    pdesc.stderr = nil
     state, stdout, stderr = os2.process_exec(pdesc, context.allocator) or_return
     return state, stdout, stderr, nil
 }

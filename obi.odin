@@ -9,6 +9,7 @@ import "core:terminal"
 import "core:terminal/ansi"
 import "core:strings"
 import "core:slice"
+import "core:hash"
 
 import "base:runtime"
 
@@ -45,9 +46,9 @@ Step :: struct {
 }
 
 Build_Context_Owned_Resources :: struct {
-    s: [dynamic]string,
-    sarr: [dynamic][]string,
-    shell_command: [dynamic]^Shell_Command
+    strs: [dynamic]string,
+    str_arrs: [dynamic][]string,
+    shell_commands: [dynamic]^Shell_Command
 }
 
 Build_Context :: struct {
@@ -74,22 +75,22 @@ Build_Context :: struct {
     stderr: os.Handle
 }
 
-@(private="file")
+@(private)
 _own_string :: proc(ctx: ^Build_Context, data: string, clone := false) -> (value: string, err: Allocator_Error) {
     value = clone ? strings.clone(data, ctx.allocator) or_return : data
-    append(&ctx.owned_resources.s, value) or_return
+    append(&ctx.owned_resources.strs, value) or_return
     return value, nil
 }
-@(private="file")
+@(private)
 _own_string_array :: proc(ctx: ^Build_Context, data: []string, clone_slice := false, clone_strings := false) -> (value: []string, err: Allocator_Error) {
     value = clone_slice ? slice.clone(data, ctx.allocator) or_return : data
     for &s, i in data do value[i] = _own_string(ctx, s, clone=clone_strings) or_return
     return value, nil
 }
-@(private="file")
+@(private)
 _own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command, clone_slice := false, clone_strings := false) -> (value: ^Shell_Command, err: Allocator_Error) {
     value = new(Shell_Command, ctx.allocator) or_return
-    append(&ctx.owned_resources.shell_command, value) or_return
+    append(&ctx.owned_resources.shell_commands, value) or_return
     value.working_dir = _own(ctx, cmd.working_dir, clone=clone_strings) or_return
     value.command = _own(ctx, cmd.command, clone_slice=clone_slice, clone_strings=clone_strings) or_return
     if env, ok := cmd.env.?; ok {
@@ -97,27 +98,27 @@ _own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command, clone_slice
     }
     return value, nil
 }
-@(private="file")
+@(private)
 _own :: proc{_own_string, _own_string_array, _own_shell_command}
 
 @(private="file")
 _init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
-    r.s = make([dynamic]string, allocator) or_return
-    r.sarr = make([dynamic][]string, allocator) or_return
-    r.shell_command = make([dynamic]^Shell_Command, allocator) or_return
+    r.strs = make([dynamic]string, allocator) or_return
+    r.str_arrs = make([dynamic][]string, allocator) or_return
+    r.shell_commands = make([dynamic]^Shell_Command, allocator) or_return
     return nil
 }
 
 @(private="file")
 _destroy_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
-    for &s in r.sarr do delete(s, allocator) or_return
-    delete(r.sarr) or_return
+    for &s in r.str_arrs do delete(s, allocator) or_return
+    delete(r.str_arrs) or_return
 
-    for &s in r.s do delete(s, allocator) or_return
-    delete(r.s) or_return
+    for &s in r.strs do delete(s, allocator) or_return
+    delete(r.strs) or_return
 
-    for &p in r.shell_command do free(p, allocator) or_return
-    delete(r.shell_command) or_return
+    for &p in r.shell_commands do free(p, allocator) or_return
+    delete(r.shell_commands) or_return
 
     return nil
 }
@@ -180,21 +181,44 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success:
     defer delete(stdout, ctx.allocator)
     defer delete(stderr, ctx.allocator)
 
-    fmt.fprint(ctx.stdout, "CMD: ", sep="")
+    fmt.fprint(ctx.stdout,
+        stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+        "CMD: ",
+        stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+        sep=""
+    )
     for &token, i in cmd.command {
-        fmt.fprint(ctx.stdout, token, i + 1 < len(cmd.command) ? " " : "", sep="", flush=false)
+        if len(token) > 2 && ((token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'')) {
+            fmt.fprint(ctx.stdout,
+                stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
+                token, 
+                stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+                i + 1 < len(cmd.command) ? " " : "", 
+                sep="", flush=false
+            )
+        } else if strings.contains(token, " ") && len(token) > 1 {
+            fmt.fprint(ctx.stdout,
+                stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
+                '"', token, '"',
+                stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+                i + 1 < len(cmd.command) ? " " : "", 
+                sep="", flush=false
+            )
+        } else {
+            fmt.fprint(ctx.stdout, token, i + 1 < len(cmd.command) ? " " : "", sep="", flush=false)
+        }
     }
     fmt.fprintln(ctx.stdout)
 
-    fmt.fprintln(ctx.stdout, 
-        stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "", 
-        "OUT:", 
-        stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+    if len(stdout) > 0 do fmt.fprintln(ctx.stdout, 
+        // stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+        // "OUT:", 
+        // stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
         "\n",
         transmute(string)stdout,
         sep=""
     )
-    fmt.fprintln(ctx.stderr, 
+    if len(stderr) > 0 do fmt.fprintln(ctx.stderr, 
         stderr_color_enabled ? ansi.CSI + ansi.FG_RED + ";" + ansi.BOLD + ansi.SGR : "", 
         "ERR:", 
         stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
@@ -204,7 +228,6 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success:
     )
     success = state.success when ODIN_OS != .Windows else state.exit_code == 0
     fmt.fprintln(ctx.stdout,
-        "\n",
         "Program exited with code ",
         stdout_color_enabled ? (success ? ansi.CSI + ansi.FG_BRIGHT_GREEN + ansi.SGR : ansi.CSI + ansi.FG_BRIGHT_RED + ansi.SGR) : "",
         state.exit_code,
@@ -214,25 +237,11 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success:
     fmt.fprintln(ctx.stdout, "Time elapsed:")
 
     system_time_ms := time.duration_milliseconds(state.system_time)
-    system_time_ns := time.duration_nanoseconds(state.system_time)
     user_time_ms := time.duration_milliseconds(state.user_time)
-    user_time_ns := time.duration_nanoseconds(state.user_time)
-    system_time_ms_len, user_time_ms_len := 0, 0
-    {
-        temp_sb := strings.builder_make(ctx.allocator) or_return
-        defer strings.builder_destroy(&temp_sb)
-        
-        system_time_ms_len  = len(fmt.sbprint(&temp_sb, system_time_ms, sep=""))
-        strings.builder_reset(&temp_sb)
 
-        user_time_ms_len  = len(fmt.sbprint(&temp_sb, user_time_ms, sep=""))        
-    }
-    max_ms_len := max(system_time_ms_len, user_time_ms_len)
-
-    fmt.fprintfln(ctx.stdout, "  System time: %dms%*s%dns", system_time_ms, (max_ms_len-system_time_ms_len)+1, "", system_time_ns)
-    fmt.fprintfln(ctx.stdout, "  User time:   %dms%*s%dns", user_time_ms, (max_ms_len-user_time_ms_len)+1, "", user_time_ns)
+    fmt.fprintfln(ctx.stdout, "  System time: %fms", system_time_ms)
+    fmt.fprintfln(ctx.stdout, "  User time:   %fms", user_time_ms)
     
-
     return success, nil
 }
 
