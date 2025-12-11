@@ -11,9 +11,15 @@ build :: proc() -> obi.Error {
         command={"echo", "Hi from OBI"},
         env=nil
     }
-    cmd_step := obi.shell_command_to_step(&ctx, &cmd) or_return
+    cmd_step := obi.to_step(&ctx, &cmd) or_return
 
-    append(&ctx.pre_build_steps, cmd_step) or_return
+    odin_run := obi.Odin_Run{
+        path=obi.Odin_Build_Dir_Path("."),
+        extra_flags={}
+    }
+    odin_run_step := obi.to_step(&ctx, &odin_run) or_return
+
+    append(&ctx.pre_build_steps, cmd_step, odin_run_step) or_return
 
     obi.build(&ctx) or_return
     

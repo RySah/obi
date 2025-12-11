@@ -279,6 +279,8 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
     return nil
 }
 
+to_step :: proc{shell_command_to_step,odin_run_to_step}
+
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
 */
 c_include :: ci.include

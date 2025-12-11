@@ -28,7 +28,13 @@ Odin_Build :: struct {
     extra_flags: []string
 }
 
-Odin_Run :: distinct Odin_Build
+Odin_Run :: struct {
+    // File or directory to build
+    path: Odin_Build_Path,
+
+    // Extra build flags
+    extra_flags: []string
+}
 
 // Construct an `Shell_Command` that expresses the specified `Odin_Build` object.
 odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p: ^Shell_Command, err: Allocator_Error) {
@@ -60,22 +66,22 @@ odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd
     }
     switch b.mode {
         case .Executable:
-            cmd.command[i] = "-build-mode:exe"
+            cmd.command[i] = _own(ctx, "-build-mode:exe", clone=true) or_return
             i += 1
         case .Dynamic:
-            cmd.command[i] = "-build-mode:dynamic"
+            cmd.command[i] = _own(ctx, "-build-mode:dynamic", clone=true) or_return
             i += 1
         case .Static:
-            cmd.command[i] = "-build-mode:static"
+            cmd.command[i] = _own(ctx, "-build-mode:static", clone=true) or_return
             i += 1
         case .Object:
-            cmd.command[i] = "-build-mode:object"
+            cmd.command[i] = _own(ctx, "-build-mode:object", clone=true) or_return
             i += 1
         case .Assembly:
-            cmd.command[i] = "-build-mode:assembly"
+            cmd.command[i] = _own(ctx, "-build-mode:assembly", clone=true) or_return
             i += 1
         case .LLVM_IR:
-            cmd.command[i] = "-build-mode:llvm-ir"
+            cmd.command[i] = _own(ctx, "-build-mode:llvm-ir", clone=true) or_return
             i += 1
     }
     extra_flags := _own(ctx, b.extra_flags, clone_slice=true, clone_strings=true) or_return
@@ -90,14 +96,13 @@ odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (step: Step, 
 }
 
 // Construct an `Shell_Command` that expresses the specified `Odin_Run` object.
-odin_run_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (cmd_p: ^Shell_Command, err: Allocator_Error) {
+odin_run_to_shell_command :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Shell_Command, err: Allocator_Error) {
     command_size := 2 // odin build
-    switch _ in b.path {
+    switch _ in r.path {
         case Odin_Build_File_Path: command_size += 2 // <file> -file
         case Odin_Build_Dir_Path: command_size += 1 // <dir>
     }
-    command_size += 1 // -build-mode:<mode>
-    command_size += len(b.extra_flags)
+    command_size += len(r.extra_flags)
     cmd: Shell_Command = {
         working_dir = "",
         command = make([]string, command_size, ctx.allocator) or_return,
@@ -107,7 +112,7 @@ odin_run_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (cmd_p: 
     cmd.command[0] = _own(ctx, "odin", clone=true) or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
     cmd.command[1] = _own(ctx, "run", clone=true) or_return
     i := 2
-    switch v in b.path {
+    switch v in r.path {
         case Odin_Build_File_Path:
             cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
@@ -117,27 +122,7 @@ odin_run_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (cmd_p: 
             cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
     }
-    switch b.mode {
-        case .Executable:
-            cmd.command[i] = "-build-mode:exe"
-            i += 1
-        case .Dynamic:
-            cmd.command[i] = "-build-mode:dynamic"
-            i += 1
-        case .Static:
-            cmd.command[i] = "-build-mode:static"
-            i += 1
-        case .Object:
-            cmd.command[i] = "-build-mode:object"
-            i += 1
-        case .Assembly:
-            cmd.command[i] = "-build-mode:assembly"
-            i += 1
-        case .LLVM_IR:
-            cmd.command[i] = "-build-mode:llvm-ir"
-            i += 1
-    }
-    extra_flags := _own(ctx, b.extra_flags, clone_slice=true, clone_strings=true) or_return
+    extra_flags := _own(ctx, r.extra_flags, clone_slice=true, clone_strings=true) or_return
     for &fl, j in extra_flags do cmd.command[i+j] = fl
     cmd_p = _own(ctx, &cmd, clone_slice=false, clone_strings=false) or_return
     return cmd_p, nil
