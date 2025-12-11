@@ -38,9 +38,16 @@ Error :: union #shared_nil {
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
 DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_api"
 
+Step :: struct {
+    procedure: #type proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error),
+    client_data: rawptr,
+    required_success: bool
+}
+
 Build_Context_Owned_Resources :: struct {
     s: [dynamic]string,
-    sarr: [dynamic][]string
+    sarr: [dynamic][]string,
+    shell_command: [dynamic]^Shell_Command
 }
 
 Build_Context :: struct {
@@ -55,14 +62,10 @@ Build_Context :: struct {
     // Default parent directory for `C_Import_Info` objects.  
     // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_folder` to customize it for that specific object.
     c_import_output_path: string,
-    // Collection of commands to run before anything is built.  
-    // **NOTE:** You may use the collection and directly to add `Shell_Command`, but **ENSURE** the lifetime of the contents of `Shell_Command` is the same as or longer
-    // than that off the owning `Build_Context`, otherwise undefined behaviour. A **safer** approach is to use the `add_pre_build_shell_command` procedure.
-    pre_build: [dynamic]Shell_Command,
-    // Collection of commands to run after everything is built.  
-    // **NOTE:** You may use the collection and directly to add `Shell_Command`, but **ENSURE** the lifetime of the contents of `Shell_Command` is the same as or longer
-    // than that off the owning `Build_Context`, otherwise undefined behaviour. A **safer** approach is to use the `add_post_build_shell_command` procedure.
-    post_build: [dynamic]Shell_Command,
+    // Collection of steps to run before anything is built.  
+    pre_build_steps: [dynamic]Step,
+    // Collection of steps to run after everything is built.  
+    post_build_steps: [dynamic]Step,
     // Output handle for all respective printing procedures.    
     // **NOTE:** Set to the system stdout (`os.stdout`) by default.
     stdout: os.Handle, 
@@ -84,12 +87,24 @@ _own_string_array :: proc(ctx: ^Build_Context, data: []string, clone_slice := fa
     return value, nil
 }
 @(private="file")
-_own :: proc{_own_string, _own_string_array}
+_own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command, clone_slice := false, clone_strings := false) -> (value: ^Shell_Command, err: Allocator_Error) {
+    value = new(Shell_Command, ctx.allocator) or_return
+    append(&ctx.owned_resources.shell_command, value) or_return
+    value.working_dir = _own(ctx, cmd.working_dir, clone=clone_strings) or_return
+    value.command = _own(ctx, cmd.command, clone_slice=clone_slice, clone_strings=clone_strings) or_return
+    if env, ok := cmd.env.?; ok {
+        value.env = _own(ctx, env, clone_slice=clone_slice, clone_strings=clone_strings) or_return
+    }
+    return value, nil
+}
+@(private="file")
+_own :: proc{_own_string, _own_string_array, _own_shell_command}
 
 @(private="file")
 _init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
     r.s = make([dynamic]string, allocator) or_return
     r.sarr = make([dynamic][]string, allocator) or_return
+    r.shell_command = make([dynamic]^Shell_Command, allocator) or_return
     return nil
 }
 
@@ -100,6 +115,10 @@ _destroy_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources
 
     for &s in r.s do delete(s, allocator) or_return
     delete(r.s) or_return
+
+    for &p in r.shell_command do free(p, allocator) or_return
+    delete(r.shell_command) or_return
+
     return nil
 }
  
@@ -115,8 +134,8 @@ create_build_context :: proc(
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
     ctx.c_import_output_path = c_import_output_path
-    ctx.pre_build = make([dynamic]Shell_Command, ctx.allocator) or_return
-    ctx.post_build = make([dynamic]Shell_Command, ctx.allocator) or_return
+    ctx.pre_build_steps = make([dynamic]Step, ctx.allocator) or_return
+    ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = os.stdout
     ctx.stderr = os.stderr
     return ctx, nil
@@ -136,10 +155,15 @@ destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
     }
     delete(ctx.c_import_infos) or_return
 
-    delete(ctx.pre_build) or_return
-    delete(ctx.post_build) or_return
+    delete(ctx.pre_build_steps) or_return
+    delete(ctx.post_build_steps) or_return
     
     return nil
+}
+
+run_step :: proc(ctx: ^Build_Context, step: Step) -> (success: bool, err: Error) {
+    success = step.procedure(ctx, step.client_data) or_return
+    return success, nil
 }
 
 /* NOTE: This uses `shell.run` internally, but omits functionality on what it returns.
@@ -148,11 +172,11 @@ destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
    To force disable coloured output, set `terminal.color_enabled` to false.   
    To force enable coloured output, set `terminal.color_enabled` to true.
 */
-run_shell_command :: proc(ctx: ^Build_Context, cmd: Shell_Command) -> (err: Error) {
+run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success: bool, err: Error) {
     stdout_color_enabled := terminal.is_terminal(ctx.stdout) && terminal.color_enabled
     stderr_color_enabled := terminal.is_terminal(ctx.stderr) && terminal.color_enabled
 
-    state, stdout, stderr := shell.run(cmd, ctx.allocator) or_return
+    state, stdout, stderr := shell.run(cmd^, ctx.allocator) or_return
     defer delete(stdout, ctx.allocator)
     defer delete(stderr, ctx.allocator)
 
@@ -178,10 +202,11 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: Shell_Command) -> (err: Erro
         transmute(string)stderr,
         sep=""
     )
+    success = state.success when ODIN_OS != .Windows else state.exit_code == 0
     fmt.fprintln(ctx.stdout,
         "\n",
         "Program exited with code ",
-        stdout_color_enabled ? ((state.success) when ODIN_OS != .Windows else (state.exit_code == 0 ? ansi.CSI + ansi.FG_BRIGHT_GREEN + ansi.SGR : ansi.CSI + ansi.FG_BRIGHT_RED + ansi.SGR)) : "",
+        stdout_color_enabled ? (success ? ansi.CSI + ansi.FG_BRIGHT_GREEN + ansi.SGR : ansi.CSI + ansi.FG_BRIGHT_RED + ansi.SGR) : "",
         state.exit_code,
         stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
         sep=""
@@ -208,44 +233,27 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: Shell_Command) -> (err: Erro
     fmt.fprintfln(ctx.stdout, "  User time:   %dms%*s%dns", user_time_ms, (max_ms_len-user_time_ms_len)+1, "", user_time_ns)
     
 
-    return nil
+    return success, nil
 }
 
-// Clones the shell commands and appends it to the contexts pre build collection. Helping ensure memory safety.
-add_pre_build_shell_command :: proc(ctx: ^Build_Context, cmds: ..Shell_Command) -> Allocator_Error {
-    reserve(&ctx.pre_build, cap(ctx.pre_build)+len(cmds)) or_return
-    for &cmd in cmds {
-        owned_cmd := cmd
-        owned_cmd.working_dir = _own(ctx, owned_cmd.working_dir, clone=true) or_return
-        owned_cmd.command = _own(ctx, owned_cmd.command, clone_slice=true, clone_strings=true) or_return
-        if env, ok := owned_cmd.env.?; ok {
-            owned_cmd.env = _own(ctx, env, clone_slice=true, clone_strings=true) or_return
-        }
-        append(&ctx.pre_build, owned_cmd) or_return
+// Clones `cmd` and converts it to a step.
+shell_command_to_step :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (step: Step, err: Allocator_Error) {
+    owned_cmd := _own(ctx, cmd, clone_slice=true, clone_strings=true) or_return
+    step.client_data = owned_cmd
+    step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
+        cmd := transmute(^Shell_Command)client_data
+        return run_shell_command(ctx, cmd)
     }
-    return nil
-}
-
-// Clones the shell commands and appends it to the contexts post build collection. Helping ensure memory safety.
-add_post_build_shell_command :: proc(ctx: ^Build_Context, cmds: ..Shell_Command) -> Allocator_Error {
-    reserve(&ctx.post_build, cap(ctx.post_build)+len(cmds)) or_return
-    for &cmd in cmds {
-        owned_cmd := cmd
-        owned_cmd.working_dir = _own(ctx, owned_cmd.working_dir, clone=true) or_return
-        owned_cmd.command = _own(ctx, owned_cmd.command, clone_slice=true, clone_strings=true) or_return
-        if env, ok := owned_cmd.env.?; ok {
-            owned_cmd.env = _own(ctx, env, clone_slice=true, clone_strings=true) or_return
-        }
-        append(&ctx.post_build, owned_cmd) or_return
-    }
-    return nil
+    return step, err
 }
 
 /* Use the `Build_Context` to build the respective project.
 */
 build :: proc(ctx: ^Build_Context) -> (err: Error) {
-    for &c in ctx.pre_build {
-        run_shell_command(ctx, c) or_return
+    for &c in ctx.pre_build_steps {
+        if success := run_step(ctx, c) or_return; !success && c.required_success {
+            break // No more steps will be ran
+        }
         fmt.fprintln(ctx.stdout)
     }
 
@@ -253,8 +261,10 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
         c_import_info(ctx, info) or_return
     }
 
-    for &c in ctx.post_build {
-        run_shell_command(ctx, c) or_return
+    for &c in ctx.post_build_steps {
+        if success := run_step(ctx, c) or_return; !success && c.required_success {
+            break // No more steps will be ran
+        }
         fmt.fprintln(ctx.stdout)
     }
     return nil
