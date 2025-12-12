@@ -6,7 +6,7 @@ build :: proc() -> obi.Error {
     ctx := obi.create_build_context(context.allocator) or_return
     defer obi.destroy_build_context(&ctx) 
 
-    cmd := obi.Shell_Command{
+    cmd := obi.Sub_Process_Command{
         working_dir="",
         command={"echo", "Hi from OBI"},
         env=nil

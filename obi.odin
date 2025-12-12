@@ -25,15 +25,16 @@ import cachefs "cache_fs"
 Cache_File_System_Error :: cachefs.Error
 Cache_File_System :: cachefs.File_System
 
-import shell "shell"
-Shell_Error :: shell.Error
-Shell_Command :: shell.Command
+import subprocess "subprocess"
+Sub_Process_Error :: subprocess.Error
+Sub_Process_Command :: subprocess.Command
 
 Error :: union #shared_nil {
     C_Import_Error,
     Cache_File_System_Error,
-    Shell_Error,
-    Allocator_Error
+    Sub_Process_Error,
+    Allocator_Error,
+    Make_Error
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
@@ -48,7 +49,7 @@ Step :: struct {
 Build_Context_Owned_Resources :: struct {
     strs: [dynamic]string,
     str_arrs: [dynamic][]string,
-    shell_commands: [dynamic]^Shell_Command
+    shell_commands: [dynamic]^Sub_Process_Command
 }
 
 Build_Context :: struct {
@@ -88,8 +89,8 @@ _own_string_array :: proc(ctx: ^Build_Context, data: []string, clone_slice := fa
     return value, nil
 }
 @(private)
-_own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command, clone_slice := false, clone_strings := false) -> (value: ^Shell_Command, err: Allocator_Error) {
-    value = new(Shell_Command, ctx.allocator) or_return
+_own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, clone_slice := false, clone_strings := false) -> (value: ^Sub_Process_Command, err: Allocator_Error) {
+    value = new(Sub_Process_Command, ctx.allocator) or_return
     append(&ctx.owned_resources.shell_commands, value) or_return
     value.working_dir = _own(ctx, cmd.working_dir, clone=clone_strings) or_return
     value.command = _own(ctx, cmd.command, clone_slice=clone_slice, clone_strings=clone_strings) or_return
@@ -105,7 +106,7 @@ _own :: proc{_own_string, _own_string_array, _own_shell_command}
 _init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
     r.strs = make([dynamic]string, allocator) or_return
     r.str_arrs = make([dynamic][]string, allocator) or_return
-    r.shell_commands = make([dynamic]^Shell_Command, allocator) or_return
+    r.shell_commands = make([dynamic]^Sub_Process_Command, allocator) or_return
     return nil
 }
 
@@ -173,11 +174,11 @@ run_step :: proc(ctx: ^Build_Context, step: Step) -> (success: bool, err: Error)
    To force disable coloured output, set `terminal.color_enabled` to false.   
    To force enable coloured output, set `terminal.color_enabled` to true.
 */
-run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success: bool, err: Error) {
+run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (success: bool, err: Error) {
     stdout_color_enabled := terminal.is_terminal(ctx.stdout) && terminal.color_enabled
     stderr_color_enabled := terminal.is_terminal(ctx.stderr) && terminal.color_enabled
 
-    state, stdout, stderr := shell.run(cmd^, ctx.allocator) or_return
+    state, stdout, stderr := subprocess.run(cmd^, ctx.allocator) or_return
     defer delete(stdout, ctx.allocator)
     defer delete(stderr, ctx.allocator)
 
@@ -246,12 +247,12 @@ run_shell_command :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (success:
 }
 
 // Clones `cmd` and converts it to a step.
-shell_command_to_step :: proc(ctx: ^Build_Context, cmd: ^Shell_Command) -> (step: Step, err: Allocator_Error) {
+subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (step: Step, err: Allocator_Error) {
     owned_cmd := _own(ctx, cmd, clone_slice=true, clone_strings=true) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
-        cmd := transmute(^Shell_Command)client_data
-        return run_shell_command(ctx, cmd)
+        cmd := transmute(^Sub_Process_Command)client_data
+        return run_subprocess(ctx, cmd)
     }
     return step, err
 }
@@ -279,7 +280,7 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
     return nil
 }
 
-to_step :: proc{shell_command_to_step,odin_run_to_step}
+to_step :: proc{subprocess_to_step,odin_run_to_step}
 
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
 */

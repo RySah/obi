@@ -1,5 +1,7 @@
 package obi
 
+import "core:strings"
+
 Odin_Build_Mode_Type :: enum int {
     Executable,
     Dynamic,
@@ -36,8 +38,8 @@ Odin_Run :: struct {
     extra_flags: []string
 }
 
-// Construct an `Shell_Command` that expresses the specified `Odin_Build` object.
-odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p: ^Shell_Command, err: Allocator_Error) {
+// Construct an `Sub_Process_Command` that expresses the specified `Odin_Build` object.
+odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p: ^Sub_Process_Command, err: Allocator_Error) {
     command_size := 2 // odin build
     switch _ in b.path {
         case Odin_Build_File_Path: command_size += 2 // <file> -file
@@ -45,7 +47,7 @@ odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd
     }
     command_size += 1 // -build-mode:<mode>
     command_size += len(b.extra_flags)
-    cmd: Shell_Command = {
+    cmd: Sub_Process_Command = {
         working_dir = "",
         command = make([]string, command_size, ctx.allocator) or_return,
         env=nil,
@@ -56,12 +58,14 @@ odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd
     i := 2
     switch v in b.path {
         case Odin_Build_File_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
+            cmd.command[i] = _own(ctx, path, clone=false) or_return
             i += 1
             cmd.command[i] = _own(ctx, "-file", clone=true) or_return
             i += 1
         case Odin_Build_Dir_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
+            cmd.command[i] = _own(ctx, path, clone=false) or_return
             i += 1
     }
     switch b.mode {
@@ -91,19 +95,19 @@ odin_build_to_shell_command :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd
 }
 
 odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (step: Step, err: Allocator_Error) {
-    cmd := odin_build_to_shell_command(ctx, b) or_return
-    return shell_command_to_step(ctx, cmd)
+    cmd := odin_build_to_subprocess(ctx, b) or_return
+    return subprocess_to_step(ctx, cmd)
 }
 
-// Construct an `Shell_Command` that expresses the specified `Odin_Run` object.
-odin_run_to_shell_command :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Shell_Command, err: Allocator_Error) {
+// Construct an `Sub_Process_Command` that expresses the specified `Odin_Run` object.
+odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Sub_Process_Command, err: Allocator_Error) {
     command_size := 2 // odin build
     switch _ in r.path {
         case Odin_Build_File_Path: command_size += 2 // <file> -file
         case Odin_Build_Dir_Path: command_size += 1 // <dir>
     }
     command_size += len(r.extra_flags)
-    cmd: Shell_Command = {
+    cmd: Sub_Process_Command = {
         working_dir = "",
         command = make([]string, command_size, ctx.allocator) or_return,
         env=nil,
@@ -114,12 +118,14 @@ odin_run_to_shell_command :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: 
     i := 2
     switch v in r.path {
         case Odin_Build_File_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
+            cmd.command[i] = _own(ctx, path, clone=false) or_return
             i += 1
             cmd.command[i] = _own(ctx, "-file", clone=true) or_return
             i += 1
         case Odin_Build_Dir_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
+            cmd.command[i] = _own(ctx, path, clone=false) or_return
             i += 1
     }
     extra_flags := _own(ctx, r.extra_flags, clone_slice=true, clone_strings=true) or_return
@@ -129,6 +135,6 @@ odin_run_to_shell_command :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: 
 }
 
 odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (step: Step, err: Allocator_Error) {
-    cmd := odin_run_to_shell_command(ctx, b) or_return
-    return shell_command_to_step(ctx, cmd)
+    cmd := odin_run_to_subprocess(ctx, b) or_return
+    return subprocess_to_step(ctx, cmd)
 }
