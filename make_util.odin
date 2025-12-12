@@ -114,7 +114,7 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
     command_size += 1 if m.mark_targets else 0
     command_size += len(m.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = "",
+        working_dir = _own(ctx, ctx.working_dir, clone=true) or_return,
         command = make([]string, command_size, ctx.allocator) or_return,
         env=nil,
         stdin=nil
@@ -125,12 +125,10 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
         case Make_File_Path:
             cmd.command[i] = _own(ctx, "-f", clone=true) or_return
             i += 1
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
         case Make_CWD_Path:
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
     }
     if count, ok := m.job_count.?; ok {
@@ -162,4 +160,9 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
     for &fl, j in extra_flags do cmd.command[i+j] = fl
     cmd_p = _own(ctx, &cmd, clone_slice=false, clone_strings=false) or_return
     return cmd_p, nil
+}
+
+make_to_step :: proc(ctx: ^Build_Context, m: ^Make) -> (step: Step, err: Error) {
+    cmd := make_to_subprocess(ctx, m) or_return
+    return subprocess_to_step(ctx, cmd)
 }

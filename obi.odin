@@ -9,7 +9,6 @@ import "core:terminal"
 import "core:terminal/ansi"
 import "core:strings"
 import "core:slice"
-import "core:hash"
 
 import "base:runtime"
 
@@ -26,6 +25,7 @@ Cache_File_System_Error :: cachefs.Error
 Cache_File_System :: cachefs.File_System
 
 import subprocess "subprocess"
+Sub_Process_File :: subprocess.File
 Sub_Process_Error :: subprocess.Error
 Sub_Process_Command :: subprocess.Command
 
@@ -69,11 +69,12 @@ Build_Context :: struct {
     // Collection of steps to run after `c_import_infos` is handled.  
     post_build_steps: [dynamic]Step,
     // Output handle for all respective printing procedures.    
-    // **NOTE:** Set to the system stdout (`os.stdout`) by default.
-    stdout: os.Handle, 
+    // **NOTE:** Set to the system stdout (`subprocess.stdout`) by default.
+    stdout: ^Sub_Process_File, 
     // Error output handle for all respective printing procedures.    
-    // **NOTE:** Set to the system stderr (`os.stderr`) by default.
-    stderr: os.Handle
+    // **NOTE:** Set to the system stderr (`subprocess.stderr`) by default.
+    stderr: ^Sub_Process_File,
+    working_dir: string
 }
 
 @(private)
@@ -112,13 +113,19 @@ _init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, a
 
 @(private="file")
 _destroy_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
-    for &s in r.str_arrs do delete(s, allocator) or_return
+    for &s in r.str_arrs {
+        if raw_data(s) != nil do delete(s, allocator)
+    }
     delete(r.str_arrs) or_return
 
-    for &s in r.strs do delete(s, allocator) or_return
+    for &s in r.strs {
+        delete(s, allocator)
+    }
     delete(r.strs) or_return
 
-    for &p in r.shell_commands do free(p, allocator) or_return
+    for &p in r.shell_commands {
+        if p != nil do free(p, allocator) or_return
+    }
     delete(r.shell_commands) or_return
 
     return nil
@@ -138,8 +145,10 @@ create_build_context :: proc(
     ctx.c_import_output_path = c_import_output_path
     ctx.pre_build_steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
-    ctx.stdout = os.stdout
-    ctx.stderr = os.stderr
+    ctx.stdout = subprocess.stdout()
+    ctx.stderr = subprocess.stderr()
+    ctx.working_dir = _own(&ctx, os2.get_working_directory(ctx.allocator) or_return, clone=false) or_return
+    
     return ctx, nil
 }
 
@@ -175,74 +184,85 @@ run_step :: proc(ctx: ^Build_Context, step: Step) -> (success: bool, err: Error)
    To force enable coloured output, set `terminal.color_enabled` to true.
 */
 run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (success: bool, err: Error) {
-    stdout_color_enabled := terminal.is_terminal(ctx.stdout) && terminal.color_enabled
-    stderr_color_enabled := terminal.is_terminal(ctx.stderr) && terminal.color_enabled
+    stdout_color_enabled := ctx.stdout == nil ? false : subprocess.is_terminal(ctx.stdout) && terminal.color_enabled
+    stderr_color_enabled := ctx.stderr == nil ? false : subprocess.is_terminal(ctx.stderr) && terminal.color_enabled
 
+    if ctx.stdout != nil {
+        oh := subprocess.as_unsafe_os_handle(ctx.stdout)
+        fmt.fprint(oh,
+            stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+            "CMD: ",
+            stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+            sep=""
+        )
+        for &token, i in cmd.command {
+            if len(token) > 2 && ((token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'')) {
+                fmt.fprint(oh,
+                    stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
+                    token, 
+                    stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+                    i + 1 < len(cmd.command) ? " " : "", 
+                    sep="", flush=false
+                )
+            } else if (strings.contains(token, " ") && len(token) > 1) {
+                fmt.fprint(oh,
+                    stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
+                    '"', token, '"',
+                    stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+                    i + 1 < len(cmd.command) ? " " : "", 
+                    sep="", flush=false
+                )
+            } else {
+                fmt.fprint(oh, token, i + 1 < len(cmd.command) ? " " : "", sep="", flush=false)
+            }
+        }
+        fmt.fprintln(oh, "\n")
+    }
+
+    cmd.stdout = ctx.stdout
+    cmd.stderr = ctx.stderr
     state, stdout, stderr := subprocess.run(cmd^, ctx.allocator) or_return
     defer delete(stdout, ctx.allocator)
     defer delete(stderr, ctx.allocator)
 
-    fmt.fprint(ctx.stdout,
-        stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-        "CMD: ",
-        stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-        sep=""
-    )
-    for &token, i in cmd.command {
-        if len(token) > 2 && ((token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'')) {
-            fmt.fprint(ctx.stdout,
-                stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
-                token, 
-                stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-                i + 1 < len(cmd.command) ? " " : "", 
-                sep="", flush=false
-            )
-        } else if strings.contains(token, " ") && len(token) > 1 {
-            fmt.fprint(ctx.stdout,
-                stdout_color_enabled ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : "",
-                '"', token, '"',
-                stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-                i + 1 < len(cmd.command) ? " " : "", 
-                sep="", flush=false
-            )
-        } else {
-            fmt.fprint(ctx.stdout, token, i + 1 < len(cmd.command) ? " " : "", sep="", flush=false)
-        }
-    }
-    fmt.fprintln(ctx.stdout)
+    // if len(stdout) > 0 do fmt.fprintln(ctx.stdout, 
+    //     // stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+    //     // "OUT:", 
+    //     // stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+    //     "\n",
+    //     transmute(string)stdout,
+    //     sep=""
+    // )
+    // if len(stderr) > 0 do fmt.fprintln(ctx.stderr, 
+    //     stderr_color_enabled ? ansi.CSI + ansi.FG_RED + ";" + ansi.BOLD + ansi.SGR : "", 
+    //     "ERR:", 
+    //     stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+    //     "\n",
+    //     transmute(string)stderr,
+    //     sep=""
+    // )
 
-    if len(stdout) > 0 do fmt.fprintln(ctx.stdout, 
-        // stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-        // "OUT:", 
-        // stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-        "\n",
-        transmute(string)stdout,
-        sep=""
-    )
-    if len(stderr) > 0 do fmt.fprintln(ctx.stderr, 
-        stderr_color_enabled ? ansi.CSI + ansi.FG_RED + ";" + ansi.BOLD + ansi.SGR : "", 
-        "ERR:", 
-        stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-        "\n",
-        transmute(string)stderr,
-        sep=""
-    )
     success = state.success when ODIN_OS != .Windows else state.exit_code == 0
-    fmt.fprintln(ctx.stdout,
-        "Program exited with code ",
-        stdout_color_enabled ? (success ? ansi.CSI + ansi.FG_BRIGHT_GREEN + ansi.SGR : ansi.CSI + ansi.FG_BRIGHT_RED + ansi.SGR) : "",
-        state.exit_code,
-        stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-        sep=""
-    )
-    fmt.fprintln(ctx.stdout, "Time elapsed:")
+    if ctx.stdout != nil {
+        oh := subprocess.as_unsafe_os_handle(ctx.stdout)
+        
+        fmt.fprintln(oh,
+            "\n",
+            "Program exited with code ",
+            stdout_color_enabled ? (success ? ansi.CSI + ansi.FG_BRIGHT_GREEN + ansi.SGR : ansi.CSI + ansi.FG_BRIGHT_RED + ansi.SGR) : "",
+            state.exit_code,
+            stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
+            sep=""
+        )
+        fmt.fprintln(oh, "Time elapsed:")
 
-    system_time_ms := time.duration_milliseconds(state.system_time)
-    user_time_ms := time.duration_milliseconds(state.user_time)
+        system_time_ms := time.duration_milliseconds(state.system_time)
+        user_time_ms := time.duration_milliseconds(state.user_time)
 
-    fmt.fprintfln(ctx.stdout, "  System time: %fms", system_time_ms)
-    fmt.fprintfln(ctx.stdout, "  User time:   %fms", user_time_ms)
-    
+        fmt.fprintfln(oh, "  System time: %fms", system_time_ms)
+        fmt.fprintfln(oh, "  User time:   %fms", user_time_ms)
+    }
+
     return success, nil
 }
 
@@ -264,7 +284,11 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
         if success := run_step(ctx, c) or_return; !success && c.required_success {
             break // No more steps will be ran
         }
-        fmt.fprintln(ctx.stdout)
+        if ctx.stdout != nil {
+            oh := subprocess.as_unsafe_os_handle(ctx.stdout)
+            fmt.fprintln(oh)
+            fmt.fprintfln(oh, "%s", [55]u8{ 0..<55='=' })
+        }
     }
 
     for &info in ctx.c_import_infos {
@@ -275,12 +299,17 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
         if success := run_step(ctx, c) or_return; !success && c.required_success {
             break // No more steps will be ran
         }
-        fmt.fprintln(ctx.stdout)
+        if ctx.stdout != nil {
+            oh := subprocess.as_unsafe_os_handle(ctx.stdout)
+            fmt.fprintln(oh)
+            fmt.fprintfln(oh, "%s", [55]u8{ 0..<55='=' })
+        }
     }
     return nil
 }
 
-to_step :: proc{subprocess_to_step,odin_run_to_step}
+to_subprocess :: proc{odin_build_to_subprocess,odin_run_to_subprocess,make_to_subprocess}
+to_step :: proc{subprocess_to_step,odin_build_to_step,odin_run_to_step,make_to_step}
 
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
 */

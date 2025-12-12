@@ -48,24 +48,23 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p:
     command_size += 1 // -build-mode:<mode>
     command_size += len(b.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = "",
+        working_dir = _own(ctx, ctx.working_dir, clone=true) or_return,
         command = make([]string, command_size, ctx.allocator) or_return,
         env=nil,
-        stdin=nil
+        stdin=nil,
+        shell=true
     }
     cmd.command[0] = _own(ctx, "odin", clone=true) or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
     cmd.command[1] = _own(ctx, "build", clone=true) or_return
     i := 2
     switch v in b.path {
         case Odin_Build_File_Path:
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
             cmd.command[i] = _own(ctx, "-file", clone=true) or_return
             i += 1
         case Odin_Build_Dir_Path:
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
     }
     switch b.mode {
@@ -108,24 +107,23 @@ odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Su
     }
     command_size += len(r.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = "",
+        working_dir = _own(ctx, ctx.working_dir, clone=true) or_return,
         command = make([]string, command_size, ctx.allocator) or_return,
         env=nil,
-        stdin=nil
+        stdin=nil,
+        shell=true
     }
     cmd.command[0] = _own(ctx, "odin", clone=true) or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
     cmd.command[1] = _own(ctx, "run", clone=true) or_return
     i := 2
     switch v in r.path {
         case Odin_Build_File_Path:
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
             cmd.command[i] = _own(ctx, "-file", clone=true) or_return
             i += 1
         case Odin_Build_Dir_Path:
-            path := strings.concatenate({ "\"", transmute(string)v, "\"" }, ctx.allocator) or_return
-            cmd.command[i] = _own(ctx, path, clone=false) or_return
+            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
             i += 1
     }
     extra_flags := _own(ctx, r.extra_flags, clone_slice=true, clone_strings=true) or_return
