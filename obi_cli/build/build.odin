@@ -8,7 +8,7 @@ import "core:strings"
 
 import "base:runtime"
 
-build :: proc() -> obi.Error {
+build_proj :: proc() -> obi.Error {
     when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
@@ -29,28 +29,17 @@ build :: proc() -> obi.Error {
     ctx := obi.create_build_context(context.allocator) or_return
     defer obi.destroy_build_context(&ctx)
 
-    // make_tomlc17 := obi.Make{
-    //     compatibility={ .GNU, .MingW32 },
-    //     path=obi.Make_CWD_Path("third_party/tomlc17-R251129"),
-    //     extra_flags={"clean"}
-    // }
-    // make_tomlc17_step := obi.to_step(&ctx, &make_tomlc17) or_return
-    // obi.add_step(&ctx, make_tomlc17_step) or_return
+    info := obi.c_import(&ctx, "raylib", "raylib.h") or_return
+    c_import_step := obi.to_step(&ctx, info) or_return
+    obi.add_step(&ctx, c_import_step) or_return
 
-    // cmd := obi.Sub_Process_Command{
-    //     working_dir=ctx.working_dir,
-    //     command={"ls"},
-    //     env=nil
-    // }
-    // cmd_step := obi.to_step(&ctx, &cmd) or_return
-    // obi.add_step(&ctx, cmd_step) or_return
-
-    odin_run := obi.Odin_Run{
+    build := obi.Odin_Build{
         path=obi.Odin_Build_Dir_Path("."),
         extra_flags={}
     }
-    odin_run_step := obi.to_step(&ctx, &odin_run) or_return
-    obi.add_step(&ctx, odin_run_step) or_return
+    build_step := obi.to_step(&ctx, &build) or_return
+    build_step.success_required = true
+    obi.add_step(&ctx, build_step) or_return
 
     obi.build(&ctx) or_return
     
@@ -58,5 +47,5 @@ build :: proc() -> obi.Error {
 }
 
 main :: proc() {
-    err := build()
+    err := build_proj()
 }

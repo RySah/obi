@@ -45,11 +45,63 @@ Error :: union #shared_nil {
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
 DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_api"
 
+// Same as Odin_OS_Type
+OS_Type :: enum int {
+    Unknown,
+    Windows,
+    Darwin,
+    Linux,
+    Essence,
+    FreeBSD,
+    OpenBSD,
+    NetBSD,
+    Haiku,
+    WASI,
+    JS,
+    Orca,
+    Freestanding
+}
+
+// Same as `Odin_Arch_Type`
+Arch_Type :: enum int {
+    Unknown,
+    amd64,
+    i386,
+    arm32,
+    arm64,
+    wasm32,
+    wasm64p32,
+    riscv64,
+}
+
+OS_Specific_Sub_Process :: [OS_Type]Maybe(Sub_Process_Command)
+Arch_Specific_Sub_Process :: [Arch_Type]Maybe(Sub_Process_Command)
+
 Step :: struct {
     procedure: #type proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error),
     client_data: rawptr,
-    required_success: bool
+    success_required: bool
 }
+
+OS_Specific_Step :: [OS_Type]Maybe(Step)
+Arch_Specific_Step :: [Arch_Type]Maybe(Step)
+
+resolve_os_specific_subprocess :: #force_inline proc(s: ^OS_Specific_Sub_Process) -> ^Maybe(Sub_Process_Command) {
+    return &s[transmute(OS_Type)ODIN_OS]
+}
+resolve_arch_specific_subprocess :: #force_inline proc(s: ^Arch_Specific_Sub_Process) -> ^Maybe(Sub_Process_Command) {
+    return &s[transmute(Arch_Type)ODIN_ARCH]
+}
+
+resolve_os_specific_step :: #force_inline proc(s: ^OS_Specific_Step) -> ^Maybe(Step) {
+    return &s[transmute(OS_Type)ODIN_OS]
+}
+resolve_arch_specific_step :: #force_inline proc(s: ^Arch_Specific_Step) -> ^Maybe(Step) {
+    return &s[transmute(Arch_Type)ODIN_ARCH]
+}
+
+resolve_os_specific :: proc{resolve_os_specific_step,resolve_os_specific_subprocess}
+resolve_arch_specific :: proc{resolve_arch_specific_step,resolve_arch_specific_subprocess}
 
 Build_Context :: struct {
     // Context allocator
@@ -58,15 +110,13 @@ Build_Context :: struct {
     garbage_collector: Garbage_Collector,
     // The cache file system.
     cache_file_system: Cache_File_System,
-    // Collection of contextual `C_Import_Info` objects, by which is freed on deconstruction.
-    c_import_infos: [dynamic]^C_Import_Info,
     // Default parent directory for `C_Import_Info` objects.  
     // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_folder` to customize it for that specific object.
     c_import_output_path: string,
-    // Collection of steps to run before `c_import_infos` are handled.  
-    pre_build_steps: [dynamic]Step,
+    // Sequence of steps to run, to complete the build.
+    steps: [dynamic]Step,
     // Collection of steps to run after `c_import_infos` is handled.  
-    post_build_steps: [dynamic]Step,
+    // post_build_steps: [dynamic]Step,
     // Output handle for all respective printing procedures.    
     // **NOTE:** Set to the system stdout (`subprocess.stdout`) by default.
     stdout: ^Sub_Process_File, 
@@ -75,6 +125,12 @@ Build_Context :: struct {
     stderr: ^Sub_Process_File,
 
     working_dir: string
+}
+
+@(private)
+_C_Import_Info_Client_Data :: struct {
+    info: ^C_Import_Info,
+    ctx: ^Build_Context
 }
 
 @(private)
@@ -127,10 +183,10 @@ create_build_context :: proc(
     ctx.allocator = allocator
     gc.init_growing(&ctx.garbage_collector) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
-    ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
+    //ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
     ctx.c_import_output_path = c_import_output_path
-    ctx.pre_build_steps = make([dynamic]Step, ctx.allocator) or_return
-    ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
+    ctx.steps = make([dynamic]Step, ctx.allocator) or_return
+    //ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = os2.get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
@@ -143,15 +199,15 @@ create_build_context :: proc(
 destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
     cachefs.destroy(&ctx.cache_file_system) or_return
     
-    for &p in ctx.c_import_infos {
-        if p == nil do continue
-        ci.destroy_import_info(p) or_return
-        free(p, ctx.allocator) or_return
-    }
-    delete(ctx.c_import_infos) or_return
+    // for &p in ctx.c_import_infos {
+    //     if p == nil do continue
+    //     ci.destroy_import_info(p) or_return
+    //     free(p, ctx.allocator) or_return
+    // }
+    // delete(ctx.c_import_infos) or_return
 
-    delete(ctx.pre_build_steps) or_return
-    delete(ctx.post_build_steps) or_return
+    delete(ctx.steps) or_return
+    //delete(ctx.post_build_steps) or_return
 
     gc.destroy(&ctx.garbage_collector)
     
@@ -246,11 +302,38 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (s
     return step, err
 }
 
+os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+    maybe_actual := resolve_os_specific_subprocess(cmd)
+    if actual, ok := maybe_actual.?; ok {
+        step = subprocess_to_step(ctx, &actual) or_return
+    } else {
+        step = nil
+    }
+    return step, nil
+}
+
+arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+    maybe_actual := resolve_arch_specific_subprocess(cmd)
+    if actual, ok := maybe_actual.?; ok {
+        step = subprocess_to_step(ctx, &actual) or_return
+    } else {
+        step = nil
+    }
+    return step, nil
+}
+
+os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+    return resolve_os_specific_subprocess(cmd)^, nil
+}
+arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+    return resolve_arch_specific_subprocess(cmd)^, nil
+}
+
 /* Use the `Build_Context` to build the respective project.
 */
 build :: proc(ctx: ^Build_Context) -> (err: Error) {
-    for &c in ctx.pre_build_steps {
-        if success := run_step(ctx, c) or_return; !success && c.required_success {
+    for &c in ctx.steps {
+        if success := run_step(ctx, c) or_return; !success && c.success_required {
             break // No more steps will be ran
         }
         if ctx.stdout != nil {
@@ -260,28 +343,6 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
         }
     }
 
-    for &info in ctx.c_import_infos {
-        c_import_info(ctx, info) or_return
-    }
-
-    for &c in ctx.post_build_steps {
-        if success := run_step(ctx, c) or_return; !success && c.required_success {
-            break // No more steps will be ran
-        }
-        if ctx.stdout != nil {
-            oh := subprocess.as_unsafe_os_handle(ctx.stdout)
-            fmt.fprintln(oh)
-            fmt.fprintfln(oh, "%s", [55]u8{ 0..<55='=' })
-        }
-    }
-    return nil
-}
-
-to_subprocess :: proc{odin_build_to_subprocess,odin_run_to_subprocess,make_to_subprocess}
-to_step :: proc{subprocess_to_step,odin_build_to_step,odin_run_to_step,make_to_step}
-
-add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
-    append(&ctx.pre_build_steps, ..steps) or_return
     return nil
 }
 
@@ -294,21 +355,56 @@ c_include :: ci.include
    **NOTE:** You can add more include paths, using `c_include`.
 */
 c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..string) -> (info: ^C_Import_Info, err: Error) {
-    info = ci.make_import_info(&ctx.cache_file_system, ctx.allocator) or_return
+    info = ci.make_import_info(&ctx.cache_file_system, gc.allocator(&ctx.garbage_collector)) or_return
     info.package_name = package_name
     output_folder := filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
     defer delete(output_folder) 
     info.output_folder = _manage_mem(ctx, output_folder) or_return
-    append(&ctx.c_import_infos, info) or_return
     c_include(info, ..include_paths) or_return
     return info, nil
 }
 
 /* Parses the information provided, and generates the respective bindings.  
    **NOTE:** Try to avoid using it on info provided from `c_import`, everything would work as intended, however this process would 
-   uneccessarily be ran twice.
+   uneccessarily be ran twice, instead convert it to a step (`to_step`) and add it to the build process (`add_step`)
 */
 c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (err: Error) {
     ci.import_info(info, ctx.allocator) or_return
+    return nil
+}
+
+c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (step: Step, err: Allocator_Error) #optional_allocator_error {
+    client_data := _C_Import_Info_Client_Data{
+        info=info,
+        ctx=ctx
+    }
+    step.client_data = _manage_mem(ctx, &client_data) or_return
+    step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
+        ciicd := transmute(^_C_Import_Info_Client_Data)client_data
+        c_import_info(ciicd.ctx, ciicd.info) or_return
+        return true, nil
+    }
+    return step, nil
+}
+
+to_subprocess :: proc{
+    odin_build_to_subprocess,
+    odin_run_to_subprocess,
+    make_to_subprocess,
+    os_specific_subprocess_to_subprocess,
+    arch_specific_subprocess_to_subprocess
+}
+to_step :: proc{
+    subprocess_to_step,
+    odin_build_to_step,
+    odin_run_to_step,
+    make_to_step,
+    os_specific_subprocess_to_step,
+    arch_specific_subprocess_to_step,
+    c_import_info_to_step
+}
+
+add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
+    append(&ctx.steps, ..steps) or_return
     return nil
 }
