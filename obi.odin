@@ -83,6 +83,13 @@ Step :: struct {
     success_required: bool
 }
 
+// Adds more functionality to `Step`, to only run if a user defined hash value changes
+Smart_Step :: struct {
+    hasher: #type proc(ctx: ^Build_Context, hasher_client_data: rawptr) -> u64,
+    hasher_client_data: rawptr,
+    using step: Step
+}
+
 OS_Specific_Step :: [OS_Type]Maybe(Step)
 Arch_Specific_Step :: [Arch_Type]Maybe(Step)
 

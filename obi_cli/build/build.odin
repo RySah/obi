@@ -29,10 +29,6 @@ build_proj :: proc() -> obi.Error {
     ctx := obi.create_build_context(context.allocator) or_return
     defer obi.destroy_build_context(&ctx)
 
-    info := obi.c_import(&ctx, "raylib", "raylib.h") or_return
-    c_import_step := obi.to_step(&ctx, info) or_return
-    obi.add_step(&ctx, c_import_step) or_return
-
     build := obi.Odin_Build{
         path=obi.Odin_Build_Dir_Path("."),
         extra_flags={}

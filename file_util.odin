@@ -1,5 +1,7 @@
 package obi
 
-File_Copy_Step :: struct {
-    
+
+
+File_Or_Dir_Copy_Step :: struct {
+
 }
