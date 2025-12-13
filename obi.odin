@@ -280,6 +280,11 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
 to_subprocess :: proc{odin_build_to_subprocess,odin_run_to_subprocess,make_to_subprocess}
 to_step :: proc{subprocess_to_step,odin_build_to_step,odin_run_to_step,make_to_step}
 
+add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
+    append(&ctx.pre_build_steps, ..steps) or_return
+    return nil
+}
+
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
 */
 c_include :: ci.include

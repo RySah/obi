@@ -6,13 +6,13 @@ import "core:fmt"
 import subprocess "subprocess"
 import gc "garbage_collector"
 
-Make_Type :: enum int {
+Make_Type :: enum u8 {
     // Linux / WSL (GNU Make), macOS if GNU Make installed
-    GNU,
+    GNU=1,
     // macOS system make (BSD Make), or any manually installed bmake
-    BSD,
+    BSD=2,
     // Windows MinGW/MSYS2 (mingw32-make)
-    MingW
+    MingW32=4
 }
 
 Make_Type_Set :: bit_set[Make_Type]
@@ -26,7 +26,7 @@ Make_Path :: union {
 }
 
 when ODIN_OS == .Windows {
-    ASSUMED_DEFAULT_MAKE_TYPES :: Make_Type_Set { .MingW }
+    ASSUMED_DEFAULT_MAKE_TYPES :: Make_Type_Set{ .MingW32 }
 } else when ODIN_OS == .Linux {
     ASSUMED_DEFAULT_MAKE_TYPES :: Make_Type_Set { .GNU }
 } else when ODIN_OS == .FreeBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Darwin {
@@ -86,7 +86,7 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
             if .BSD in compatible && !found {
                 make_path, found = subprocess.which("bmake", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
             }
-            if .MingW in compatible && !found {
+            if .MingW32 in compatible && !found {
                 make_path, found = subprocess.which("mingw32-make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
                 if !found {
                     make_path, found = subprocess.which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
@@ -95,6 +95,15 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
         }
 
         if !found do return nil, Make_Error.Failed_To_Find_Compatible
+    }
+
+    for len(make_path) > 0 {
+        last := make_path[len(make_path)-1]
+        if last == '\n' || last == '\r' {
+            make_path = make_path[0:len(make_path)-1]
+        } else {
+            break
+        }
     }
 
     command_size := 1 // make
@@ -125,6 +134,8 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
             cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
         case Make_CWD_Path:
+            cmd.command[i] = _manage_mem(ctx, "-C") or_return
+            i += 1
             cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
     }
