@@ -9,6 +9,7 @@ import "core:terminal"
 import "core:terminal/ansi"
 import "core:strings"
 import "core:slice"
+import "core:mem/virtual"
 
 import "base:runtime"
 
@@ -29,6 +30,10 @@ Sub_Process_File :: subprocess.File
 Sub_Process_Error :: subprocess.Error
 Sub_Process_Command :: subprocess.Command
 
+import gc "garbage_collector"
+GC_Error :: gc.Error
+Garbage_Collector :: gc.Garbage_Collector
+
 Error :: union #shared_nil {
     C_Import_Error,
     Cache_File_System_Error,
@@ -46,17 +51,11 @@ Step :: struct {
     required_success: bool
 }
 
-Build_Context_Owned_Resources :: struct {
-    strs: [dynamic]string,
-    str_arrs: [dynamic][]string,
-    shell_commands: [dynamic]^Sub_Process_Command
-}
-
 Build_Context :: struct {
     // Context allocator
     allocator: Allocator,
-    // Collection of resources owned by `allocator`, by which will be freed on deconstruction
-    owned_resources: Build_Context_Owned_Resources,
+    // Garbage collector for owned resources
+    garbage_collector: Garbage_Collector,
     // The cache file system.
     cache_file_system: Cache_File_System,
     // Collection of contextual `C_Import_Info` objects, by which is freed on deconstruction.
@@ -74,63 +73,50 @@ Build_Context :: struct {
     // Error output handle for all respective printing procedures.    
     // **NOTE:** Set to the system stderr (`subprocess.stderr`) by default.
     stderr: ^Sub_Process_File,
+
     working_dir: string
 }
 
 @(private)
-_own_string :: proc(ctx: ^Build_Context, data: string, clone := false) -> (value: string, err: Allocator_Error) {
-    value = clone ? strings.clone(data, ctx.allocator) or_return : data
-    append(&ctx.owned_resources.strs, value) or_return
-    return value, nil
+_manage_slice :: proc(ctx: ^Build_Context, data: $T/[]$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
+    return slice.clone(data, gc.allocator(&ctx.garbage_collector))
 }
 @(private)
-_own_string_array :: proc(ctx: ^Build_Context, data: []string, clone_slice := false, clone_strings := false) -> (value: []string, err: Allocator_Error) {
-    value = clone_slice ? slice.clone(data, ctx.allocator) or_return : data
-    for &s, i in data do value[i] = _own_string(ctx, s, clone=clone_strings) or_return
-    return value, nil
+_manage_string :: proc(ctx: ^Build_Context, data: string) -> (clone: string, err: Allocator_Error) #optional_allocator_error {
+    return strings.clone(data, gc.allocator(&ctx.garbage_collector))
 }
 @(private)
-_own_shell_command :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, clone_slice := false, clone_strings := false) -> (value: ^Sub_Process_Command, err: Allocator_Error) {
-    value = new(Sub_Process_Command, ctx.allocator) or_return
-    append(&ctx.owned_resources.shell_commands, value) or_return
-    value.working_dir = _own(ctx, cmd.working_dir, clone=clone_strings) or_return
-    value.command = _own(ctx, cmd.command, clone_slice=clone_slice, clone_strings=clone_strings) or_return
-    if env, ok := cmd.env.?; ok {
-        value.env = _own(ctx, env, clone_slice=clone_slice, clone_strings=clone_strings) or_return
-    }
-    return value, nil
+_manage_ptr :: proc(ctx: ^Build_Context, data: $T/^$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
+    gc_allocator := gc.allocator(&ctx.garbage_collector)
+    clone = new_clone(data^, gc_allocator) or_return
+    return clone, nil
 }
 @(private)
-_own :: proc{_own_string, _own_string_array, _own_shell_command}
-
-@(private="file")
-_init_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
-    r.strs = make([dynamic]string, allocator) or_return
-    r.str_arrs = make([dynamic][]string, allocator) or_return
-    r.shell_commands = make([dynamic]^Sub_Process_Command, allocator) or_return
-    return nil
+_manage_string_slice :: proc(ctx: ^Build_Context, data: []string, clone_strings:=true) -> (clone: []string, err: Allocator_Error) #optional_allocator_error {
+    clone = _manage_slice(ctx, data) or_return
+    if clone_strings {
+        for &s, i in data {
+            clone[i] = _manage_string(ctx, s) or_return
+        }
+    }
+    return clone, nil
 }
-
-@(private="file")
-_destroy_build_context_owned_resources :: proc(r: ^Build_Context_Owned_Resources, allocator: Allocator) -> Allocator_Error {
-    for &s in r.str_arrs {
-        if raw_data(s) != nil do delete(s, allocator)
+@(private)
+_manage_cmd :: proc(ctx: ^Build_Context, data: ^Sub_Process_Command, clone_members := false) -> (clone: ^Sub_Process_Command, err: Allocator_Error) #optional_allocator_error {
+    clone = _manage_ptr(ctx, data) or_return
+    if clone_members {
+        clone.command = _manage_slice(ctx, data.command) or_return
+        if env, ok := data.env.?; ok {
+            clone.env = _manage_slice(ctx, env) or_return
+        } else {
+            clone.env = nil
+        }
+        clone.working_dir = _manage_string(ctx, data.working_dir) or_return
     }
-    delete(r.str_arrs) or_return
-
-    for &s in r.strs {
-        delete(s, allocator)
-    }
-    delete(r.strs) or_return
-
-    for &p in r.shell_commands {
-        if p != nil do free(p, allocator) or_return
-    }
-    delete(r.shell_commands) or_return
-
-    return nil
+    return clone, nil
 }
- 
+@(private) _manage_mem :: proc{_manage_slice,_manage_string,_manage_ptr,_manage_cmd,_manage_string_slice}
+
 /* Creates a `Build_Context`, essential for any builds.
 */
 create_build_context :: proc(
@@ -139,7 +125,7 @@ create_build_context :: proc(
     c_import_output_path := DEFAULT_C_IMPORT_OUTPUT_PATH
 ) -> (ctx: Build_Context, err: Error) {
     ctx.allocator = allocator
-    _init_build_context_owned_resources(&ctx.owned_resources, ctx.allocator) or_return
+    gc.init_growing(&ctx.garbage_collector) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
     ctx.c_import_output_path = c_import_output_path
@@ -147,7 +133,7 @@ create_build_context :: proc(
     ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
-    ctx.working_dir = _own(&ctx, os2.get_working_directory(ctx.allocator) or_return, clone=false) or_return
+    ctx.working_dir = os2.get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
     
     return ctx, nil
 }
@@ -155,8 +141,6 @@ create_build_context :: proc(
 /* Destroy the contents of an `Build_Context` object, essential for memory safety.
 */
 destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
-    _destroy_build_context_owned_resources(&ctx.owned_resources, ctx.allocator) or_return
-
     cachefs.destroy(&ctx.cache_file_system) or_return
     
     for &p in ctx.c_import_infos {
@@ -168,6 +152,8 @@ destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
 
     delete(ctx.pre_build_steps) or_return
     delete(ctx.post_build_steps) or_return
+
+    gc.destroy(&ctx.garbage_collector)
     
     return nil
 }
@@ -225,23 +211,6 @@ run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (succe
     defer delete(stdout, ctx.allocator)
     defer delete(stderr, ctx.allocator)
 
-    // if len(stdout) > 0 do fmt.fprintln(ctx.stdout, 
-    //     // stdout_color_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-    //     // "OUT:", 
-    //     // stdout_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-    //     "\n",
-    //     transmute(string)stdout,
-    //     sep=""
-    // )
-    // if len(stderr) > 0 do fmt.fprintln(ctx.stderr, 
-    //     stderr_color_enabled ? ansi.CSI + ansi.FG_RED + ";" + ansi.BOLD + ansi.SGR : "", 
-    //     "ERR:", 
-    //     stderr_color_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : "",
-    //     "\n",
-    //     transmute(string)stderr,
-    //     sep=""
-    // )
-
     success = state.success when ODIN_OS != .Windows else state.exit_code == 0
     if ctx.stdout != nil {
         oh := subprocess.as_unsafe_os_handle(ctx.stdout)
@@ -268,7 +237,7 @@ run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (succe
 
 // Clones `cmd` and converts it to a step.
 subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (step: Step, err: Allocator_Error) {
-    owned_cmd := _own(ctx, cmd, clone_slice=true, clone_strings=true) or_return
+    owned_cmd := _manage_mem(ctx, cmd, clone_members=true) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         cmd := transmute(^Sub_Process_Command)client_data
@@ -322,8 +291,9 @@ c_include :: ci.include
 c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..string) -> (info: ^C_Import_Info, err: Error) {
     info = ci.make_import_info(&ctx.cache_file_system, ctx.allocator) or_return
     info.package_name = package_name
-    info.output_folder = filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
-    info.output_folder = _own(ctx, info.output_folder, clone=false) or_return
+    output_folder := filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
+    defer delete(output_folder) 
+    info.output_folder = _manage_mem(ctx, output_folder) or_return
     append(&ctx.c_import_infos, info) or_return
     c_include(info, ..include_paths) or_return
     return info, nil

@@ -2,6 +2,8 @@ package obi
 
 import "core:strings"
 
+import gc "garbage_collector"
+
 Odin_Build_Mode_Type :: enum int {
     Executable,
     Dynamic,
@@ -48,48 +50,47 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p:
     command_size += 1 // -build-mode:<mode>
     command_size += len(b.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = _own(ctx, ctx.working_dir, clone=true) or_return,
-        command = make([]string, command_size, ctx.allocator) or_return,
+        working_dir = _manage_mem(ctx, ctx.working_dir) or_return,
+        command = make([]string, command_size, gc.allocator(&ctx.garbage_collector)) or_return,
         env=nil,
-        stdin=nil,
-        shell=true
+        stdin=nil
     }
-    cmd.command[0] = _own(ctx, "odin", clone=true) or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
-    cmd.command[1] = _own(ctx, "build", clone=true) or_return
+    cmd.command[0] = _manage_mem(ctx, "odin") or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
+    cmd.command[1] = _manage_mem(ctx, "build") or_return
     i := 2
     switch v in b.path {
         case Odin_Build_File_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
-            cmd.command[i] = _own(ctx, "-file", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-file") or_return
             i += 1
         case Odin_Build_Dir_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
     }
     switch b.mode {
         case .Executable:
-            cmd.command[i] = _own(ctx, "-build-mode:exe", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:exe") or_return
             i += 1
         case .Dynamic:
-            cmd.command[i] = _own(ctx, "-build-mode:dynamic", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:dynamic") or_return
             i += 1
         case .Static:
-            cmd.command[i] = _own(ctx, "-build-mode:static", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:static") or_return
             i += 1
         case .Object:
-            cmd.command[i] = _own(ctx, "-build-mode:object", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:object") or_return
             i += 1
         case .Assembly:
-            cmd.command[i] = _own(ctx, "-build-mode:assembly", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:assembly") or_return
             i += 1
         case .LLVM_IR:
-            cmd.command[i] = _own(ctx, "-build-mode:llvm-ir", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-build-mode:llvm-ir") or_return
             i += 1
     }
-    extra_flags := _own(ctx, b.extra_flags, clone_slice=true, clone_strings=true) or_return
+    extra_flags := _manage_mem(ctx, b.extra_flags, clone_strings=true) or_return
     for &fl, j in extra_flags do cmd.command[i+j] = fl
-    cmd_p = _own(ctx, &cmd, clone_slice=false, clone_strings=false) or_return
+    cmd_p = _manage_mem(ctx, &cmd, clone_members=false) or_return
     return cmd_p, nil
 }
 
@@ -107,28 +108,27 @@ odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Su
     }
     command_size += len(r.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = _own(ctx, ctx.working_dir, clone=true) or_return,
-        command = make([]string, command_size, ctx.allocator) or_return,
+        working_dir = _manage_mem(ctx, ctx.working_dir) or_return,
+        command = make([]string, command_size, gc.allocator(&ctx.garbage_collector)) or_return,
         env=nil,
-        stdin=nil,
-        shell=true
+        stdin=nil
     }
-    cmd.command[0] = _own(ctx, "odin", clone=true) or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
-    cmd.command[1] = _own(ctx, "run", clone=true) or_return
+    cmd.command[0] = _manage_mem(ctx, "odin") or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
+    cmd.command[1] = _manage_mem(ctx, "build") or_return
     i := 2
     switch v in r.path {
         case Odin_Build_File_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
-            cmd.command[i] = _own(ctx, "-file", clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, "-file") or_return
             i += 1
         case Odin_Build_Dir_Path:
-            cmd.command[i] = _own(ctx, transmute(string)v, clone=true) or_return
+            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
             i += 1
     }
-    extra_flags := _own(ctx, r.extra_flags, clone_slice=true, clone_strings=true) or_return
+    extra_flags := _manage_mem(ctx, r.extra_flags, clone_strings=true) or_return
     for &fl, j in extra_flags do cmd.command[i+j] = fl
-    cmd_p = _own(ctx, &cmd, clone_slice=false, clone_strings=false) or_return
+    cmd_p = _manage_mem(ctx, &cmd, clone_members=false) or_return
     return cmd_p, nil
 }
 

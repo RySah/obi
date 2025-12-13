@@ -86,7 +86,10 @@ run :: proc(cmd: Command, allocator := context.allocator) -> (state: State, stdo
         free_env = true
         pdesc.env = environ(context.allocator) or_return
     }
-    defer if free_env do delete(pdesc.env)
+    defer if free_env {
+        for &e in pdesc.env do delete(e)
+        delete(pdesc.env)
+    }
     pdesc.stdin = cmd.stdin
     pdesc.stdout = cmd.stdout
     pdesc.stderr = cmd.stderr

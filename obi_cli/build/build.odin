@@ -4,10 +4,9 @@ import obi "../.."
 
 import "core:mem"
 import "core:fmt"
+import "core:strings"
 
-import "core:os"
-import "core:os/os2"
-
+import "base:runtime"
 
 build :: proc() -> obi.Error {
     when ODIN_DEBUG {
@@ -19,7 +18,8 @@ build :: proc() -> obi.Error {
 			if len(track.allocation_map) > 0 {
 				fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
 				for _, entry in track.allocation_map {
-					fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+					fmt.eprintf("- %v bytes @ %v  %v\n", entry.size, entry.location, entry.memory)
+                    
 				}
 			}
 			mem.tracking_allocator_destroy(&track)
@@ -35,14 +35,14 @@ build :: proc() -> obi.Error {
         env=nil
     }
     cmd_step := obi.to_step(&ctx, &cmd) or_return
+    append(&ctx.pre_build_steps, cmd_step) or_return
 
     odin_run := obi.Odin_Run{
-        path=obi.Odin_Build_Dir_Path(ctx.working_dir),
+        path=obi.Odin_Build_Dir_Path("."),
         extra_flags={}
     }
     odin_run_step := obi.to_step(&ctx, &odin_run) or_return
-
-    append(&ctx.pre_build_steps, cmd_step, odin_run_step) or_return
+    append(&ctx.pre_build_steps, odin_run_step) or_return
 
     obi.build(&ctx) or_return
     
