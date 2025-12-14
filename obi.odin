@@ -12,6 +12,7 @@ import "core:slice"
 import "core:mem/virtual"
 import hash_algo "core:hash"
 import "core:math/bits"
+import "core:text/regex"
 
 import "base:runtime"
 
@@ -461,30 +462,104 @@ fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher) -> (output: Hasher, 
     return output, nil
 }
 
-file_and_dir_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string)) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
-    sanitized_targets := make([]Hasher, len(targets), ctx.allocator) or_return
-    defer delete(sanitized_targets, ctx.allocator)
+files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string), dir_glob_patterns: []string = { "*" }, file_glob_patterns: []string = {}) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+    sanitized_targets := make([dynamic]Hasher, 0, len(targets), ctx.allocator) or_return
+    defer delete(sanitized_targets)
 
-    for &unknown_target, i in targets {
+    for &unknown_target in targets {
         switch target in unknown_target {
             case string:
-                managed_target := _manage_mem(ctx, target) or_return
-                managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
-                sanitized_targets[i] = Hasher{
-                    procedure=proc(client_data: rawptr) -> u64 {
-                        path_ptr := transmute(^string)client_data
-                        path := path_ptr^
-                        if !os2.exists(path) do return empty_hasher_procedure(client_data)
-                        b, b_err := os2.read_entire_file(path, context.allocator)
-                        if b_err != nil do return empty_hasher_procedure(client_data)
-                        return hash_algo.murmur64a(b)
-                    },
-                    client_data=managed_target_ptr
+                if os2.is_dir(target) {
+                    walker := os2.walker_create(target)
+                    defer os2.walker_destroy(&walker)
+
+                    for info in os2.walker_walk(&walker) {
+                        _ = os2.walker_error(&walker) or_continue
+
+                        if info.type == .Directory {
+                            rel_path, _ := filepath.rel(ctx.working_dir, info.fullpath, context.allocator)
+                            defer delete(rel_path)
+                            matched := false
+                            for &pattern in dir_glob_patterns {
+                                glob_match, glob_match_err := filepath.match(pattern, rel_path)
+                                if glob_match_err != nil do glob_match = false
+                                if glob_match {
+                                    matched = true
+                                    break
+                                }
+                            }
+                            if !matched && len(dir_glob_patterns) > 0 {
+                                os2.walker_skip_dir(&walker)
+                                continue
+                            }
+                        } else if info.type == .Regular {
+                            rel_path, _ := filepath.rel(ctx.working_dir, info.fullpath, context.allocator)
+                            defer delete(rel_path)
+                            matched := false
+                            for &pattern in file_glob_patterns {
+                                glob_match, glob_match_err := filepath.match(pattern, rel_path)
+                                if glob_match_err != nil do glob_match = false
+                                if glob_match {
+                                    matched = true
+                                    break
+                                }
+                            }
+                            if !matched && len(file_glob_patterns) > 0 {
+                                continue
+                            }
+
+                            managed_fullpath := _manage_mem(ctx, info.fullpath) or_return
+                            managed_fullpath_ptr := _manage_mem(ctx, &managed_fullpath) or_return
+                            append(&sanitized_targets, Hasher{
+                                procedure=proc(client_data: rawptr) -> u64 {
+                                    path_ptr := transmute(^string)client_data
+                                    path := path_ptr^
+                                    if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                                    b, b_err := os2.read_entire_file(path, context.allocator)
+                                    if b_err != nil do return empty_hasher_procedure(client_data)
+                                    return hash_algo.murmur64a(b)
+                                },
+                                client_data=managed_fullpath_ptr
+                            }) or_return
+                        }
+                    }
+                } else {
+                    fullpath, ok := filepath.abs(target, context.allocator)
+                    if !ok do continue
+                    defer delete(fullpath)
+                    rel_path, _ := filepath.rel(ctx.working_dir, fullpath, context.allocator)
+                    defer delete(rel_path)
+                    matched := false
+                    for &pattern in file_glob_patterns {
+                        glob_match, glob_match_err := filepath.match(pattern, rel_path)
+                        if glob_match_err != nil do glob_match = false
+                        if glob_match {
+                            matched = true
+                            break
+                        }
+                    }
+                    if !matched && len(file_glob_patterns) > 0 {
+                        continue
+                    }
+
+                    managed_target := _manage_mem(ctx, target) or_return
+                    managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
+                    append(&sanitized_targets, Hasher{
+                        procedure=proc(client_data: rawptr) -> u64 {
+                            path_ptr := transmute(^string)client_data
+                            path := path_ptr^
+                            if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                            b, b_err := os2.read_entire_file(path, context.allocator)
+                            if b_err != nil do return empty_hasher_procedure(client_data)
+                            return hash_algo.murmur64a(b)
+                        },
+                        client_data=managed_target_ptr
+                    }) or_return
                 }
             case Hasher:
-                sanitized_targets[i] = target
+                append(&sanitized_targets, target) or_return
         }
     }
     
-    return fingerprint(ctx, ..sanitized_targets)
+    return fingerprint(ctx, ..sanitized_targets[:])
 }

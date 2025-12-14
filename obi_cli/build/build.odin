@@ -35,7 +35,17 @@ build_proj :: proc() -> obi.Error {
     }
     build_step := obi.to_step(&ctx, &build) or_return
     build_step.success_required = true
-    obi.add_step(&ctx, build_step) or_return
+    
+    planned_build_step := obi.plan_step(&ctx,
+        obi.files_fingerprint(&ctx, 
+            ".",
+            file_glob_patterns={"*.odin"}
+        ) or_return,
+        build_step
+    ) or_return
+    obi.add_step(&ctx, 
+        planned_build_step.? or_else obi.Empty_Step
+    ) or_return
 
     obi.build(&ctx) or_return
     
