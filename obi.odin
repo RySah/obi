@@ -10,6 +10,8 @@ import "core:terminal/ansi"
 import "core:strings"
 import "core:slice"
 import "core:mem/virtual"
+import hash_algo "core:hash"
+import "core:math/bits"
 
 import "base:runtime"
 
@@ -83,15 +85,35 @@ Step :: struct {
     success_required: bool
 }
 
-// Adds more functionality to `Step`, to only run if a user defined hash value changes
-Smart_Step :: struct {
-    hasher: #type proc(ctx: ^Build_Context, hasher_client_data: rawptr) -> u64,
-    hasher_client_data: rawptr,
-    using step: Step
+empty_step_procedure :: proc(^Build_Context,rawptr) -> (bool, Error) { return true, nil }
+
+Empty_Step :: Step{
+    procedure=empty_step_procedure,
+    client_data=nil,
+    success_required=false
 }
 
 OS_Specific_Step :: [OS_Type]Maybe(Step)
 Arch_Specific_Step :: [Arch_Type]Maybe(Step)
+
+Hasher :: struct {
+    procedure: #type proc(client_data: rawptr) -> u64,
+    client_data: rawptr
+}
+
+empty_hasher_procedure :: proc(rawptr) -> u64 {
+    @(static) unique_v: u64 = 0
+    if unique_v == bits.U64_MAX do unique_v = 0
+    unique_v += 1
+    return unique_v
+}
+
+Empty_Hasher :: Hasher{
+    procedure=empty_hasher_procedure,
+    client_data=nil
+}
+
+run_hasher :: #force_inline proc(hasher: Hasher) -> u64 { return hasher.procedure(hasher.client_data) }
 
 resolve_os_specific_subprocess :: #force_inline proc(s: ^OS_Specific_Sub_Process) -> ^Maybe(Sub_Process_Command) {
     return &s[transmute(OS_Type)ODIN_OS]
@@ -414,4 +436,55 @@ to_step :: proc{
 add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
     append(&ctx.steps, ..steps) or_return
     return nil
+}
+
+// Using the `hasher`, it will determine whether the step belongs in the overall build.
+plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step) -> (step: Maybe(Step), err: Error) {
+    hash_v := run_hasher(fingerprint)
+    if cachefs.hash_exists(&ctx.cache_file_system, hash_v) do return nil, nil
+    cachefs.create_from_hash(&ctx.cache_file_system, hash_v) or_return
+    return s, nil
+}
+
+Fingerprint_Target :: union($T: typeid) { T, Hasher }
+
+fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+    managed_targets := _manage_mem(ctx, targets) or_return
+    managed_targets_ptr := _manage_mem(ctx, &managed_targets) or_return
+    output.procedure = proc(client_data: rawptr) -> u64 {
+        targets := transmute(^[]Hasher)client_data
+        result: u64 = 0
+        for &target in targets do result ~= run_hasher(target)
+        return result
+    }
+    output.client_data = managed_targets_ptr
+    return output, nil
+}
+
+file_and_dir_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string)) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+    sanitized_targets := make([]Hasher, len(targets), ctx.allocator) or_return
+    defer delete(sanitized_targets, ctx.allocator)
+
+    for &unknown_target, i in targets {
+        switch target in unknown_target {
+            case string:
+                managed_target := _manage_mem(ctx, target) or_return
+                managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
+                sanitized_targets[i] = Hasher{
+                    procedure=proc(client_data: rawptr) -> u64 {
+                        path_ptr := transmute(^string)client_data
+                        path := path_ptr^
+                        if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                        b, b_err := os2.read_entire_file(path, context.allocator)
+                        if b_err != nil do return empty_hasher_procedure(client_data)
+                        return hash_algo.murmur64a(b)
+                    },
+                    client_data=managed_target_ptr
+                }
+            case Hasher:
+                sanitized_targets[i] = target
+        }
+    }
+    
+    return fingerprint(ctx, ..sanitized_targets)
 }

@@ -100,6 +100,13 @@ path_from_hash :: proc(system: ^File_System, hash_v: u64) -> (path: string, err:
     return path, nil
 }
 
+create_from_hash :: proc(system: ^File_System, hash_v: u64) -> (path: string, err: Error) {
+    p := path_from_hash(system, hash_v) or_return
+    f := os2.create(p) or_return
+    defer os2.close(f)
+    return p, nil
+}
+
 hash_exists :: proc(system: ^File_System, hash_v: u64) -> bool {
     path, path_err := path_from_hash(system, hash_v)
     if path_err != nil do return false
