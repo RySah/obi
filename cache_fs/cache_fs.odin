@@ -83,7 +83,7 @@ hash :: proc(
 path_from_hash :: proc(system: ^File_System, hash_v: u64) -> (path: string, err: mem.Allocator_Error) {
     context.allocator = system.allocator
 
-    hex_hash_buf: [16]byte
+    hex_hash_buf: [17]byte
     hex_hash := strconv.write_uint(hex_hash_buf[:], hash_v, 16)
 
     filename := strings.concatenate({ hex_hash, ".txt" }) or_return

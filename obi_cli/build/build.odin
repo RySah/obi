@@ -26,8 +26,10 @@ build_proj :: proc() -> obi.Error {
 		}
 	}
 
-    ctx := obi.create_build_context(context.allocator) or_return
+    ctx := obi.create_build_context() or_return
     defer obi.destroy_build_context(&ctx)
+
+    ctx.logger = obi.create_build_logger(&ctx)
 
     build := obi.Odin_Build{
         path=obi.Odin_Build_Dir_Path("."),
