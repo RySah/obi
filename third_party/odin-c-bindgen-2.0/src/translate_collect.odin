@@ -22,7 +22,7 @@ Translate_Collect_Result :: struct {
 // that is deferred to `translate_process`.
 //@(private="package", require_results)
 @(require_results)
-translate_collect :: proc(filename: string, config: Config, types: Type_List, decls: Decl_List) -> (Translate_Collect_Result, bool) {
+translate_collect :: proc(filename: string, config: Config, types: Type_List, decls: Decl_List, force_multipointer: bool) -> (Translate_Collect_Result, bool) {
 	clang_args: [dynamic]cstring
 	append(&clang_args, "-fparse-all-comments")
 
@@ -76,6 +76,7 @@ translate_collect :: proc(filename: string, config: Config, types: Type_List, de
 		translation_unit = unit,
 		types = types,
 		decls = decls,
+		force_multipointer=force_multipointer
 	}
 
 	// I dislike visitors. They make the code hard to read. So I build a map of all parents and
@@ -115,6 +116,7 @@ Translate_Collect_State :: struct {
 	extra_imports: map[string]bool,
 	macros: [dynamic]Raw_Macro,
 	translation_unit: clang.Translation_Unit,
+	force_multipointer: bool
 }
 
 build_cursor_children_lookup :: proc(c: clang.Cursor, res: ^Cursor_Children_Map) {
@@ -727,7 +729,12 @@ create_type_recursive :: proc(ct: clang.Type, tcs: ^Translate_Collect_State) -> 
 		} else {
 			ptr_type_idx := reserve_type(ct, tcs)
 			pointing_to_id := get_type_name_or_create_anon_type(clang_pointee_type, tcs)
-			tcs.types[ptr_type_idx] = Type_Pointer { pointed_to_type = pointing_to_id }
+			if tcs.force_multipointer {
+				tcs.types[ptr_type_idx] = Type_Multipointer { pointed_to_type = pointing_to_id }
+			} else {
+				tcs.types[ptr_type_idx] = Type_Pointer { pointed_to_type = pointing_to_id }
+			}
+
 			return ptr_type_idx
 		}
 	case .Record:

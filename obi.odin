@@ -69,17 +69,18 @@ OS_Type :: enum int {
 // Same as `Odin_Arch_Type`
 Arch_Type :: enum int {
     Unknown,
-    amd64,
-    i386,
-    arm32,
-    arm64,
-    wasm32,
-    wasm64p32,
-    riscv64,
+    AMD64,
+    I386,
+    ARM32,
+    ARM64,
+    WASM32,
+    WASM64p32,
+    RISCV64,
 }
 
 OS_Specific_Sub_Process :: [OS_Type]Maybe(Sub_Process_Command)
 Arch_Specific_Sub_Process :: [Arch_Type]Maybe(Sub_Process_Command)
+OS_Arch_Specific_Sub_Process :: [OS_Type][Arch_Type]Maybe(Sub_Process_Command)
 
 Step :: struct {
     name: string,
@@ -99,6 +100,7 @@ Empty_Step :: Step{
 
 OS_Specific_Step :: [OS_Type]Maybe(Step)
 Arch_Specific_Step :: [Arch_Type]Maybe(Step)
+OS_Arch_Specific_Step :: [OS_Type][Arch_Type]Maybe(Step)
 
 Hasher :: struct {
     procedure: #type proc(client_data: rawptr) -> u64,
@@ -126,6 +128,9 @@ resolve_os_specific_subprocess :: #force_inline proc(s: ^OS_Specific_Sub_Process
 resolve_arch_specific_subprocess :: #force_inline proc(s: ^Arch_Specific_Sub_Process) -> ^Maybe(Sub_Process_Command) {
     return &s[transmute(Arch_Type)ODIN_ARCH]
 }
+resolve_os_arch_specific_subprocess :: #force_inline proc(s: ^OS_Arch_Specific_Sub_Process) -> ^Maybe(Sub_Process_Command) {
+    return &s[transmute(OS_Type)ODIN_OS][transmute(Arch_Type)ODIN_ARCH]
+}
 
 resolve_os_specific_step :: #force_inline proc(s: ^OS_Specific_Step) -> ^Maybe(Step) {
     return &s[transmute(OS_Type)ODIN_OS]
@@ -133,9 +138,13 @@ resolve_os_specific_step :: #force_inline proc(s: ^OS_Specific_Step) -> ^Maybe(S
 resolve_arch_specific_step :: #force_inline proc(s: ^Arch_Specific_Step) -> ^Maybe(Step) {
     return &s[transmute(Arch_Type)ODIN_ARCH]
 }
+resolve_os_arch_specific_step :: #force_inline proc(s: ^OS_Arch_Specific_Step) -> ^Maybe(Step) {
+    return &s[transmute(OS_Type)ODIN_OS][transmute(Arch_Type)ODIN_ARCH]
+}
 
 resolve_os_specific :: proc{resolve_os_specific_step,resolve_os_specific_subprocess}
 resolve_arch_specific :: proc{resolve_arch_specific_step,resolve_arch_specific_subprocess}
+resolve_os_arch_specific :: proc{resolve_os_arch_specific_step,resolve_os_arch_specific_subprocess}
 
 Build_Context :: struct {
     // Allocator
@@ -270,12 +279,21 @@ when ODIN_DEBUG {
     Lowest_Build_Logger_Level :: log.Level.Info
 }
 
-Default_Build_Logger_Opts :: log.Options{
-	.Level,
-	.Terminal_Color,
-	.Short_File_Path,
-	.Line,
-	.Procedure,
+when ODIN_DEBUG {
+    Default_Build_Logger_Opts :: log.Options{
+    	.Level,
+    	.Terminal_Color,
+    	.Short_File_Path,
+    	.Line,
+    	.Procedure,
+    }
+} else {
+    Default_Build_Logger_Opts :: log.Options{
+    	.Level,
+    	.Terminal_Color,
+    	.Short_File_Path,
+    	.Procedure,
+    }
 }
 
 create_build_logger :: #force_inline proc(ctx: ^Build_Context, lowest := Lowest_Build_Logger_Level, opt := Default_Build_Logger_Opts) -> log.Logger {
@@ -429,9 +447,17 @@ os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Su
     }
     return step, nil
 }
-
 arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
     maybe_actual := resolve_arch_specific_subprocess(cmd)
+    if actual, ok := maybe_actual.?; ok {
+        step = subprocess_to_step(ctx, &actual) or_return
+    } else {
+        step = nil
+    }
+    return step, nil
+}
+os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+    maybe_actual := resolve_os_arch_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
     } else {
@@ -445,6 +471,9 @@ os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, 
 }
 arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
     return resolve_arch_specific_subprocess(cmd)^, nil
+}
+os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+    return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
 /* Use the `Build_Context` to build the respective project.
@@ -527,7 +556,8 @@ to_subprocess :: proc{
     odin_run_to_subprocess,
     make_to_subprocess,
     os_specific_subprocess_to_subprocess,
-    arch_specific_subprocess_to_subprocess
+    arch_specific_subprocess_to_subprocess,
+    os_arch_specific_subprocess_to_subprocess
 }
 to_step :: proc{
     subprocess_to_step,
@@ -536,7 +566,9 @@ to_step :: proc{
     make_to_step,
     os_specific_subprocess_to_step,
     arch_specific_subprocess_to_step,
-    c_import_info_to_step
+    os_arch_specific_subprocess_to_step,
+    c_import_info_to_step,
+    file_create_to_step
 }
 
 add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {

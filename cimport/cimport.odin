@@ -73,6 +73,9 @@ Import_Info :: struct {
     remove: [dynamic]string,
     // Group all procedures at the end of the file.
     procedures_at_end: bool,
+    // Multi pointers must be explicitly set by `procedure_type_overrides`, or `struct_field_overrides` for it to be considered so.
+    explicit_multi_pointers: bool,
+
 
     // Additional include paths to send into clang. While generating the bindings clang will look into
     // this path in search for included headers.
@@ -163,6 +166,6 @@ as_bindgen_config :: proc(info: ^Import_Info) -> (config: Bindgen_Config, err: E
 import_info :: proc(info: ^Import_Info, allocator := context.allocator) -> (err: Error) {
     context.allocator = allocator
     config := as_bindgen_config(info) or_return
-    bindgen.run(&config, ".", function_name_case=info.function_name_case) or_return
+    bindgen.run(&config, ".", !info.explicit_multi_pointers, function_name_case=info.function_name_case) or_return
     return nil
 }

@@ -43,7 +43,7 @@ Error :: union #shared_nil {
     os2.Error
 }
 
-run :: proc(config: ^Config, cwd: string, function_name_case := Output_Name_Case.Original, allocator := context.allocator) -> Error {
+run :: proc(config: ^Config, cwd: string, force_multipointer: bool, function_name_case := Output_Name_Case.Original, allocator := context.allocator) -> Error {
     context.allocator = allocator
 
     output_folder := filepath.join({ cwd, config.output_folder }) or_return
@@ -107,7 +107,7 @@ run :: proc(config: ^Config, cwd: string, function_name_case := Output_Name_Case
             src.gen_ctx.temp_allocator = vmem.arena_allocator(&gen_arena)
             defer vmem.arena_destroy(&gen_arena)
 
-            collect_res, collect_ok := translate_collect(input_filename, config^, types, decls)
+            collect_res, collect_ok := translate_collect(input_filename, config^, types, decls, force_multipointer)
 
             if !collect_ok do continue
 
