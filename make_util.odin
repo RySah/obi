@@ -70,7 +70,7 @@ Make :: struct {
 Make_Error :: enum int {
     None,
     // Failed to locate any compatible `make` programs
-    Failed_To_Find_Compatible
+    Incompatible_Or_No_Make_Program=1
 }
 
 // Construct an `Sub_Process_Command` that expresses the specified `Make` object.
@@ -94,7 +94,7 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
             }
         }
 
-        if !found do return nil, Make_Error.Failed_To_Find_Compatible
+        if !found do return nil, Make_Error.Incompatible_Or_No_Make_Program
     }
 
     for len(make_path) > 0 {

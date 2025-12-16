@@ -43,7 +43,9 @@ Error :: union #shared_nil {
     Cache_File_System_Error,
     Sub_Process_Error,
     Allocator_Error,
-    Make_Error
+    Make_Error,
+    CMake_Error,
+    VS_Error
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
@@ -101,7 +103,6 @@ Empty_Step :: Step{
 OS_Specific_Step :: [OS_Type]Maybe(Step)
 Arch_Specific_Step :: [Arch_Type]Maybe(Step)
 OS_Arch_Specific_Step :: [OS_Type][Arch_Type]Maybe(Step)
-
 Hasher :: struct {
     procedure: #type proc(client_data: rawptr) -> u64,
     client_data: rawptr
@@ -166,16 +167,20 @@ Build_Context :: struct {
     // Error output handle for all subprocess commands.    
     // **NOTE:** Set to the system stderr (`subprocess.stderr`) by default.
     stderr: ^Sub_Process_File,
-
+    // Current working directory
     working_dir: string,
-
+    // If `true`, debug messages may print objects as output.
     verbose_debug: bool,
-
     // This is the hasher that provides a unique value to planned steps, based off the state of its environment.  
     // The **default** hasher will hash all items in the `cache_file_system`, this ensures planned steps will only be
     // ran, if not only provided the fingerprint is the same, but the state of the cache is also the same. Change this value
     // if other states should be taken into account. The **default** is stored at `Default_State_Hasher`.
-    state_fingerprint: Hasher
+    state_fingerprint: Hasher,
+    // Context data specific to windows. This will only be managed when `ODIN_OS == .Windows`
+    windows: struct {
+        visual_studio_releases: VS_Releases,
+        visual_studio_cmake_path: Maybe(string)
+    }
 }
 
 default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
@@ -296,8 +301,13 @@ when ODIN_DEBUG {
     }
 }
 
-create_build_logger :: #force_inline proc(ctx: ^Build_Context, lowest := Lowest_Build_Logger_Level, opt := Default_Build_Logger_Opts) -> log.Logger {
-    return log.create_console_logger(lowest=lowest, opt=opt, ident="build", allocator=ctx.allocator)
+create_build_logger :: #force_inline proc(ctx: ^Build_Context, subdomain := "", lowest := Lowest_Build_Logger_Level, opt := Default_Build_Logger_Opts) -> (logger: log.Logger, err: Allocator_Error) {
+    return log.create_console_logger(
+        lowest=lowest, 
+        opt=opt, 
+        ident=len(subdomain) > 0 ? strings.concatenate({ "build-", subdomain }, gc.allocator(&ctx.garbage_collector)) or_return : "build", 
+        allocator=ctx.allocator
+    ), nil
 }
 
 /* Creates a `Build_Context`, essential for any builds.
@@ -321,7 +331,13 @@ create_build_context :: proc(
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = os2.get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
     ctx.state_fingerprint=Default_State_Hasher
-    
+    when ODIN_OS == .Windows {
+        ctx.windows.visual_studio_releases = vs_get_release_infos(&ctx) or_return
+        best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
+        found_cmake: bool
+        ctx.windows.visual_studio_cmake_path, found_cmake = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir) or_return
+        if !found_cmake do ctx.windows.visual_studio_cmake_path = nil
+    }
     return ctx, nil
 }
 
@@ -428,7 +444,7 @@ run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (succe
 }
 
 // Clones `cmd` and converts it to a step.
-subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (step: Step, err: Allocator_Error) {
+subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (step: Step, err: Error) {
     owned_cmd := _manage_mem(ctx, cmd, clone_members=true) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
@@ -438,7 +454,7 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (s
     return step, err
 }
 
-os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
     maybe_actual := resolve_os_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -447,7 +463,7 @@ os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Su
     }
     return step, nil
 }
-arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
     maybe_actual := resolve_arch_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -456,7 +472,7 @@ arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specifi
     }
     return step, nil
 }
-os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Allocator_Error) {
+os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
     maybe_actual := resolve_os_arch_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -466,13 +482,13 @@ os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_S
     return step, nil
 }
 
-os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
     return resolve_os_specific_subprocess(cmd)^, nil
 }
-arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
     return resolve_arch_specific_subprocess(cmd)^, nil
 }
-os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Allocator_Error) {
+os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
     return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
@@ -496,12 +512,6 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
             )
             break // No more steps will be ran
         }
-
-        // if ctx.stdout != nil {
-        //     oh := subprocess.as_unsafe_os_handle(ctx.stdout)
-        //     fmt.fprintln(oh)
-        //     fmt.fprintfln(oh, "%s", [55]u8{ 0..<55='=' })
-        // }
     }
 
     failed = false
@@ -537,7 +547,7 @@ c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (err: Error)
     return nil
 }
 
-c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (step: Step, err: Allocator_Error) #optional_allocator_error {
+c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (step: Step, err: Error) {
     client_data := _C_Import_Info_Client_Data{
         info=info,
         ctx=ctx
@@ -568,12 +578,41 @@ to_step :: proc{
     arch_specific_subprocess_to_step,
     os_arch_specific_subprocess_to_step,
     c_import_info_to_step,
-    file_create_to_step
+    file_create_to_step,
+    mkdir_to_step,
+    cmake_in_source_build_to_step,
+    cmake_out_of_source_build_to_step
 }
 
 add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
     append(&ctx.steps, ..steps) or_return
     return nil
+}
+
+join_steps :: proc(ctx: ^Build_Context, steps: ..Step) -> (step: Step, err: Allocator_Error) {
+    owned_steps := _manage_mem(ctx, steps) or_return
+    owned_steps_ptr := _manage_mem(ctx, &owned_steps) or_return
+    step.client_data = owned_steps_ptr
+    step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
+        context.logger = ctx.logger
+
+        colour_enabled := .Terminal_Color in context.logger.options
+
+        steps := (transmute(^[]Step)client_data)^
+        for &c in steps {
+            if success := run_step(ctx, c) or_return; !success && c.success_required {
+                log.errorf(
+                    "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                    colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+                    colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+                )
+                break // No more steps will be ran
+            }
+        }
+
+        return true, nil
+    }
+    return step, nil
 }
 
 // Using the `hasher`, it will determine whether the step belongs in the overall build.

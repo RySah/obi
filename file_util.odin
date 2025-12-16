@@ -8,12 +8,33 @@ File_Create :: struct {
     no_truncate: bool
 }
 
-file_create_to_step :: proc(ctx: ^Build_Context, fc: ^File_Create) -> (step: Step, err: Allocator_Error) {
+file_create_to_step :: proc(ctx: ^Build_Context, fc: ^File_Create) -> (step: Step, err: Error) {
     owned_fc := _manage_mem(ctx, fc) or_return
     step.client_data = owned_fc
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         fc := transmute(^File_Create)client_data
         os2.write_entire_file_from_bytes(fc.path, fc.data, truncate=!fc.no_truncate) or_return
+        return true, nil
+    }
+    return step, err
+}
+
+MkDir :: struct {
+    path: string,
+    // If set to true, makes a new directory, creating new intervening directories when needed.
+    all: bool
+}
+
+mkdir_to_step :: proc(ctx: ^Build_Context, mkdir: ^MkDir) -> (step: Step, err: Allocator_Error) {
+    owned_mkdir := _manage_mem(ctx, mkdir) or_return
+    step.client_data = owned_mkdir
+    step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
+        mkdir := transmute(^MkDir)client_data
+        if mkdir.all {
+            os2.make_directory_all(mkdir.path) or_return
+        } else {
+            os2.make_directory(mkdir.path) or_return
+        }
         return true, nil
     }
     return step, err

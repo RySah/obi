@@ -41,7 +41,7 @@ Odin_Run :: struct {
 }
 
 // Construct an `Sub_Process_Command` that expresses the specified `Odin_Build` object.
-odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p: ^Sub_Process_Command, err: Allocator_Error) {
+odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p: ^Sub_Process_Command, err: Error) {
     command_size := 2 // odin build
     switch _ in b.path {
         case Odin_Build_File_Path: command_size += 2 // <file> -file
@@ -94,13 +94,13 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (cmd_p:
     return cmd_p, nil
 }
 
-odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (step: Step, err: Allocator_Error) {
+odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build) -> (step: Step, err: Error) {
     cmd := odin_build_to_subprocess(ctx, b) or_return
     return subprocess_to_step(ctx, cmd)
 }
 
 // Construct an `Sub_Process_Command` that expresses the specified `Odin_Run` object.
-odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Sub_Process_Command, err: Allocator_Error) {
+odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Sub_Process_Command, err: Error) {
     command_size := 2 // odin build
     switch _ in r.path {
         case Odin_Build_File_Path: command_size += 2 // <file> -file
@@ -132,7 +132,7 @@ odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run) -> (cmd_p: ^Su
     return cmd_p, nil
 }
 
-odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (step: Step, err: Allocator_Error) {
+odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run) -> (step: Step, err: Error) {
     cmd := odin_run_to_subprocess(ctx, b) or_return
     return subprocess_to_step(ctx, cmd)
 }

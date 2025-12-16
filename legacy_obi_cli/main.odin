@@ -9,9 +9,13 @@ import "core:path/filepath"
 import "core:strings"
 import "core:terminal"
 import "core:terminal/ansi"
-import "core:mem"
 
 DEFAULT_CONFIG_FILENAME :: "build.sjson"
+DEFAULT_CONFIG_CONTENT :: `
+build_directory = "build" 
+extra_build_flags = []
+output_directory = ".obi-out/build"
+`
 
 errorf :: proc(format: string, args: ..any) {
     colour_enabled := terminal.is_terminal(os.stderr) && terminal.color_enabled
@@ -35,7 +39,7 @@ main :: proc() {
     args := os2.args
 
     if strings.compare(args[1], "build") == 0 {
-        allocator_err: mem.Allocator_Error
+        allocator_err: obi.Allocator_Error
         non_abs_config_path: string
         if os2.is_dir(args[2]) {
             non_abs_config_path, allocator_err = filepath.join({ args[2], DEFAULT_CONFIG_FILENAME })
@@ -45,12 +49,12 @@ main :: proc() {
         assertf(allocator_err == nil, "Failed to allocate memory for configuration path. (%v)", allocator_err)
         defer delete(non_abs_config_path)
 
-        assertf(os2.exists(non_abs_config_path), "Could not find path: %q", non_abs_config_path)
+        assertf(os2.exists(non_abs_config_path), "Could not find path %q.", non_abs_config_path)
 
         config_path_ok: bool
         config_path: string
         config_path, config_path_ok = filepath.abs(non_abs_config_path)
-        assertf(config_path_ok, "Failed to get the absolute config path %q.", config_path)
+        assertf(config_path_ok, "Failed to get the absolute config path %q.", non_abs_config_path)
         defer delete(config_path)
 
         config: Config = ---
@@ -60,7 +64,7 @@ main :: proc() {
         output_dir_ok: bool
         output_dir_path: string
         output_dir_path, output_dir_ok = filepath.abs(config.output_directory)
-        assertf(config_path_ok, "Failed to get the absolute output directory path %q.", output_dir_path)
+        assertf(config_path_ok, "Failed to get the absolute output directory path %q.", config.output_directory)
         defer delete(output_dir_path)
 
         config_dir := filepath.dir(config_path)
@@ -77,7 +81,8 @@ main :: proc() {
         build_ctx, obi_err = obi.create_build_context()
         defer obi.destroy_build_context(&build_ctx)
 
-        build_ctx.logger = obi.create_build_logger(&build_ctx)
+        build_ctx.logger, allocator_err = obi.create_build_logger(&build_ctx, subdomain="gen")
+        assertf(allocator_err == nil, "Failed to allocate memory for build logger. (%v)", allocator_err)
 
         make_output_directory_err := os2.make_directory_all(output_dir_path)
         assertf(make_output_directory_err == nil, "Failed to make output directory. (%v)", make_output_directory_err)
@@ -148,5 +153,70 @@ main :: proc() {
         obi_err = obi.build(&build_ctx)
         assertf(obi_err == nil, "Recieved an error whilst trying to build %q. (%v)", config.build_directory, obi_err)
     }
+    else if strings.compare(args[1], "init") == 0 {
+        allocator_err: obi.Allocator_Error
+        os2_err: os2.Error
+        non_abs_output_dir_path := args[2]
 
+        assertf(os2.exists(non_abs_output_dir_path), "Could not find path %q.", non_abs_output_dir_path)
+
+        output_dir_path_ok: bool
+        output_dir_path: string
+        output_dir_path, output_dir_path_ok = filepath.abs(non_abs_output_dir_path)
+        assertf(output_dir_path_ok, "Failed to get the absolute output directory path %q.", non_abs_output_dir_path)
+        defer delete(output_dir_path)
+
+        output_config_path: string
+        output_config_path, allocator_err = filepath.join({ output_dir_path, DEFAULT_CONFIG_FILENAME })
+        assertf(allocator_err == nil, "Failed to allocate memory for output configuration path. (%v)", allocator_err)
+        defer delete(output_config_path)
+
+        os2_err = os2.write_entire_file(output_config_path, DEFAULT_CONFIG_CONTENT)
+        assertf(os2_err == nil, "Failed to write default content for %q. (%v)", output_config_path, os2_err)
+
+        output_build_pkg_path: string
+        output_build_pkg_path, allocator_err = filepath.join({ output_dir_path, "build" })
+        assertf(allocator_err == nil, "Failed to allocate memory for output build package path. (%v)", allocator_err)
+        defer delete(output_build_pkg_path)
+
+        os2_err = os2.make_directory_all(output_build_pkg_path)
+        assertf(os2_err == nil, "Failed to make all respective directories for %q. (%v)", output_build_pkg_path, os2_err)
+
+        output_build_pkg_file_path: string
+        output_build_pkg_file_path, allocator_err = filepath.join({ output_dir_path, "build", "build.odin" })
+        assertf(allocator_err == nil, "Failed to allocate memory for output build package file path. (%v)", allocator_err)
+        defer delete(output_build_pkg_file_path)
+
+        os2_err = os2.write_entire_file_from_string(
+            output_build_pkg_file_path,
+`
+package build
+import "core:fmt"
+
+// Set this package to the respective path to the obi package
+import obi
+
+build :: proc() -> obi.Error {
+    ctx := obi.create_build_context() or_return 
+    defer obi.destroy_build_context(&ctx)
+    
+    ctx.logger = obi.create_build_logger(&ctx) or_return
+    
+    // Add your build steps here ...
+
+    obi.build(&ctx) or_return
+    
+    return nil
+}
+
+main :: proc() { 
+    err := build()
+    fmt.assertf(err == nil, "Build failed. (%v)", err)
+}
+`
+        )
+        assertf(os2_err == nil, "Failed to write default content for %q. (%v)", output_build_pkg_file_path, os2_err)
+
+
+    }
 }

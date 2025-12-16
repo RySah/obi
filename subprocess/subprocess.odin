@@ -69,7 +69,7 @@ run :: proc(cmd: Command, allocator := context.allocator) -> (state: State, stdo
         for &token, i in cmd.command do pdesc.command[i+2] = token
         when ODIN_OS == .Windows {
             pdesc.command[0] = "cmd.exe"
-            pdesc.command[1] = "/C"
+            pdesc.command[1] = "/c"
         } else {
             pdesc.command[0] = "/bin/sh"
             pdesc.command[1] = "-c"
@@ -183,7 +183,7 @@ run :: proc(cmd: Command, allocator := context.allocator) -> (state: State, stdo
     }
 }
 
-// **UTIL**: Cross platform method to ensure you can find or ensure the existence of a program.  
+// Cross platform method to ensure you can find or ensure the existence of a program.  
 // **NOTE**: The local search, after the global, will only search the `cwd` and will NOT walk subdirectories for safety.
 which :: proc(name: string, allocator := context.allocator, cwd := "",  search_local := false) -> (path: string, found: bool, err: Error) {
     cmd := Command{
@@ -196,7 +196,7 @@ which :: proc(name: string, allocator := context.allocator, cwd := "",  search_l
     defer delete(stderr)
 
     path = transmute(string)stdout
-    found = (state.exit_code == 0 when ODIN_OS == .Windows else state.success) && len(path) > 0
+    found = (state.exit_code == 0 when ODIN_OS == .Windows else state.success) && os2.exists(path)
 
     if !found && search_local {
         f := os2.open(cwd) or_return
@@ -230,8 +230,9 @@ which :: proc(name: string, allocator := context.allocator, cwd := "",  search_l
 // **UTIL**: Cross platform method to ensure you can find or ensure the existence of a program.  
 // **NOTE**: The local search, after the global, will only search the `cwd` and will NOT walk subdirectories for safety.
 which_b :: proc(name: string, allocator := context.allocator, cwd := "", search_local := false) -> (found: bool, err: Error) {
+    context.allocator = allocator
     path: string
-    path, found = which(name, allocator, cwd=cwd, search_local=search_local) or_return
+    path, found = which(name, context.allocator, cwd=cwd, search_local=search_local) or_return
     defer delete(path)
     return found, nil
 }

@@ -28,7 +28,7 @@ build_proj :: proc() -> obi.Error {
     ctx := obi.create_build_context() or_return
     defer obi.destroy_build_context(&ctx)
 
-    ctx.logger = obi.create_build_logger(&ctx)
+    ctx.logger = obi.create_build_logger(&ctx) or_return
 
     // ls_cmd := obi.Sub_Process_Command{
     //     working_dir=ctx.working_dir,
