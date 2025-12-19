@@ -26,10 +26,15 @@ CMake_Program_Priority :: enum u8 {
 }
 
 @(private="file")
-_which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority) -> (path: string, found: bool, err: Error) {
+_which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority, caller_location := #caller_location) -> (path: string, found: bool, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     switch priority {
         case .User: 
-            path, found = subprocess.which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
+            path, found = ta_subprocess_which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
             when ODIN_OS == .Windows {
                 if !found {
                     path, found = ctx.windows.visual_studio_cmake_path.?
@@ -40,7 +45,7 @@ _which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority) -> (
                 path, found = ctx.windows.visual_studio_cmake_path.?
             }
             if !found {
-                path, found = subprocess.which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
+                path, found = ta_subprocess_which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
             }
     }
     return path, found, nil
@@ -63,7 +68,12 @@ CMake_In_Source_Build :: struct {
     program_priority: CMake_Program_Priority
 }
 
-cmake_in_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_In_Source_Build) -> (step: Step, err: Error) {
+cmake_in_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_In_Source_Build, caller_location := #caller_location) -> (step: Step, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.allocator = ctx.allocator
     cmake_directory := c.source_directory
     
@@ -111,7 +121,12 @@ CMake_Out_Of_Source_Build :: struct {
     program_priority: CMake_Program_Priority
 }
 
-cmake_out_of_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_Out_Of_Source_Build) -> (step: Step, err: Error) {
+cmake_out_of_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_Out_Of_Source_Build, caller_location := #caller_location) -> (step: Step, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.allocator = ctx.allocator
 
     mk_build_dir := MkDir{

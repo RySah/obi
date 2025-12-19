@@ -2,10 +2,7 @@ package obi
 
 import "core:fmt"
 import "core:os/os2"
-import "core:os"
 import "core:path/filepath"
-import "core:time"
-import "core:terminal"
 import "core:terminal/ansi"
 import "core:strings"
 import "core:slice"
@@ -147,6 +144,30 @@ resolve_os_specific :: proc{resolve_os_specific_step,resolve_os_specific_subproc
 resolve_arch_specific :: proc{resolve_arch_specific_step,resolve_arch_specific_subprocess}
 resolve_os_arch_specific :: proc{resolve_os_arch_specific_step,resolve_os_arch_specific_subprocess}
 
+Global_Build_Context :: struct {
+    // Helps trace reasons for errors
+    error_loc_trace: Location_Trace
+}
+
+global_ctx: Global_Build_Context
+
+@(private) _start_trace :: #force_inline proc() { lt_start_trace(&global_ctx.error_loc_trace) }
+@(private) _backtrace :: #force_inline proc() { lt_backtrace(&global_ctx.error_loc_trace) }
+@(private) _trace :: #force_inline proc(caller_location := #caller_location) { lt_trace_location(&global_ctx.error_loc_trace, caller_location) }
+
+@(cold)
+init :: proc(allocator := context.allocator) -> Error {
+    context.allocator = allocator
+    lt_init_location_trace(&global_ctx.error_loc_trace, context.allocator) or_return
+    return nil
+}
+
+@(cold)
+deinit :: proc() -> Error {
+    lt_destroy_location_trace(&global_ctx.error_loc_trace)
+    return nil
+}
+
 Build_Context :: struct {
     // Allocator
     allocator: Allocator,
@@ -278,30 +299,41 @@ _manage_cmd :: proc(ctx: ^Build_Context, data: ^Sub_Process_Command, clone_membe
 }
 @(private) _manage_mem :: proc{_manage_slice,_manage_string,_manage_ptr,_manage_cmd,_manage_string_slice}
 
-when ODIN_DEBUG {
-    Lowest_Build_Logger_Level :: log.Level.Debug
-} else {
-    Lowest_Build_Logger_Level :: log.Level.Info
+Debug_Mode_Lowest_Build_Logger_Level :: log.Level.Debug
+Release_Mode_Lowest_Build_Logger_Level :: log.Level.Info
+
+Debug_Mode_Build_Logger_Opts :: log.Options{
+    .Level,
+    .Terminal_Color,
+    .Short_File_Path,
+    .Line,
+    .Procedure,
+}
+Release_Mode_Build_Logger_Opts :: log.Options{
+    .Level,
+    .Terminal_Color,
+    .Short_File_Path,
+    .Procedure,
 }
 
 when ODIN_DEBUG {
-    Default_Build_Logger_Opts :: log.Options{
-    	.Level,
-    	.Terminal_Color,
-    	.Short_File_Path,
-    	.Line,
-    	.Procedure,
-    }
+    Default_Lowest_Build_Logger_Level :: Debug_Mode_Lowest_Build_Logger_Level
 } else {
-    Default_Build_Logger_Opts :: log.Options{
-    	.Level,
-    	.Terminal_Color,
-    	.Short_File_Path,
-    	.Procedure,
-    }
+    Default_Lowest_Build_Logger_Level :: Release_Mode_Lowest_Build_Logger_Level
 }
 
-create_build_logger :: #force_inline proc(ctx: ^Build_Context, subdomain := "", lowest := Lowest_Build_Logger_Level, opt := Default_Build_Logger_Opts) -> (logger: log.Logger, err: Allocator_Error) {
+when ODIN_DEBUG {
+    Default_Build_Logger_Opts :: Debug_Mode_Build_Logger_Opts
+} else {
+    Default_Build_Logger_Opts :: Release_Mode_Build_Logger_Opts
+}
+
+create_build_logger :: #force_inline proc(ctx: ^Build_Context, subdomain := "", lowest := Default_Lowest_Build_Logger_Level, opt := Default_Build_Logger_Opts, caller_location := #caller_location) -> (logger: log.Logger, err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     return log.create_console_logger(
         lowest=lowest, 
         opt=opt, 
@@ -316,8 +348,14 @@ create_build_context :: proc(
     allocator := context.allocator, 
     logger := context.logger,
     cache_file_system_path := DEFAULT_CACHE_FILE_SYSTEM_PATH, 
-    c_import_output_path := DEFAULT_C_IMPORT_OUTPUT_PATH
+    c_import_output_path := DEFAULT_C_IMPORT_OUTPUT_PATH,
+    caller_location := #caller_location
 ) -> (ctx: Build_Context, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     ctx.allocator = allocator
     ctx.logger = logger
 
@@ -329,7 +367,7 @@ create_build_context :: proc(
     //ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
-    ctx.working_dir = os2.get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
+    ctx.working_dir = ta_os2_get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
     ctx.state_fingerprint=Default_State_Hasher
     when ODIN_OS == .Windows {
         ctx.windows.visual_studio_releases = vs_get_release_infos(&ctx) or_return
@@ -343,12 +381,16 @@ create_build_context :: proc(
 
 /* Destroy the contents of an `Build_Context` object, essential for memory safety.
 */
-destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
+destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.logger = ctx.logger
 
     log.infof("[START] Destroying build context.")
-    failed := true
-    defer if failed do log.errorf("[FAIL] Destroying build context.")
+    defer if err != nil do log.errorf("[FAIL] Destroying build context.")
 
     log.debugf("[START] Destroying build context file system.")
     cachefs.destroy(&ctx.cache_file_system) or_return
@@ -361,14 +403,17 @@ destroy_build_context :: proc(ctx: ^Build_Context) -> Error {
     log.debugf("[START] Destroying build context garbage collector.")
     gc.destroy(&ctx.garbage_collector)
     log.debugf("[DONE] Destroying build context garbage collector.")
-    
-    failed = false
 
     log.infof("[DONE] Destroying build context.")
     return nil
 }
 
-run_step :: proc(ctx: ^Build_Context, step: Step) -> (success: bool, err: Error) {
+run_step :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (success: bool, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.logger = ctx.logger
 
     log.infof("[START] Running step. %s", step.name)
@@ -386,7 +431,12 @@ run_step :: proc(ctx: ^Build_Context, step: Step) -> (success: bool, err: Error)
    To force disable coloured output, set `terminal.color_enabled` to false.   
    To force enable coloured output, set `terminal.color_enabled` to true.
 */
-run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (success: bool, err: Error) {
+run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, caller_location := #caller_location) -> (success: bool, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.logger = ctx.logger
 
     // stdout_color_enabled := ctx.stdout == nil ? false : subprocess.is_terminal(ctx.stdout) && terminal.color_enabled
@@ -444,7 +494,12 @@ run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (succe
 }
 
 // Clones `cmd` and converts it to a step.
-subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (step: Step, err: Error) {
+subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, caller_location := #caller_location) -> (step: Step, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     owned_cmd := _manage_mem(ctx, cmd, clone_members=true) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
@@ -454,7 +509,12 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command) -> (s
     return step, err
 }
 
-os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
+os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     maybe_actual := resolve_os_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -463,7 +523,12 @@ os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Su
     }
     return step, nil
 }
-arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
+arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     maybe_actual := resolve_arch_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -472,7 +537,12 @@ arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specifi
     }
     return step, nil
 }
-os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (step: Maybe(Step), err: Error) {
+os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     maybe_actual := resolve_os_arch_specific_subprocess(cmd)
     if actual, ok := maybe_actual.?; ok {
         step = subprocess_to_step(ctx, &actual) or_return
@@ -482,19 +552,36 @@ os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_S
     return step, nil
 }
 
-os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+os_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process, caller_location := #caller_location) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
     return resolve_os_specific_subprocess(cmd)^, nil
 }
-arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process, caller_location := #caller_location) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
     return resolve_arch_specific_subprocess(cmd)^, nil
 }
-os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process, caller_location := #caller_location) -> (subprocess: Maybe(Sub_Process_Command), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
     return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
 /* Use the `Build_Context` to build the respective project.
 */
-build :: proc(ctx: ^Build_Context) -> (err: Error) {
+build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.logger = ctx.logger
 
     colour_enabled := .Terminal_Color in context.logger.options
@@ -522,13 +609,26 @@ build :: proc(ctx: ^Build_Context) -> (err: Error) {
 
 /* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
 */
-c_include :: ci.include
+c_include :: proc(info: ^C_Import_Info, paths: ..string, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    ci.include(info, ..paths) or_return
+    return nil
+}
 
 /* Creates and manages a new `C_Import_Info` object. You can edit the properties of `info` to adjust how you want the specified headers to be
    parsed.  
    **NOTE:** You can add more include paths, using `c_include`.
 */
-c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..string) -> (info: ^C_Import_Info, err: Error) {
+c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..string, caller_location := #caller_location) -> (info: ^C_Import_Info, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     info = ci.make_import_info(&ctx.cache_file_system, gc.allocator(&ctx.garbage_collector)) or_return
     info.package_name = package_name
     output_folder := filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
@@ -542,12 +642,22 @@ c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..str
    **NOTE:** Try to avoid using it on info provided from `c_import`, everything would work as intended, however this process would 
    uneccessarily be ran twice, instead convert it to a step (`to_step`) and add it to the build process (`add_step`)
 */
-c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (err: Error) {
+c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     ci.import_info(info, ctx.allocator) or_return
     return nil
 }
 
-c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info) -> (step: Step, err: Error) {
+c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (step: Step, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     client_data := _C_Import_Info_Client_Data{
         info=info,
         ctx=ctx
@@ -584,12 +694,22 @@ to_step :: proc{
     cmake_out_of_source_build_to_step
 }
 
-add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step) -> Allocator_Error {
+add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     append(&ctx.steps, ..steps) or_return
     return nil
 }
 
-join_steps :: proc(ctx: ^Build_Context, steps: ..Step) -> (step: Step, err: Allocator_Error) {
+join_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     owned_steps := _manage_mem(ctx, steps) or_return
     owned_steps_ptr := _manage_mem(ctx, &owned_steps) or_return
     step.client_data = owned_steps_ptr
@@ -616,7 +736,12 @@ join_steps :: proc(ctx: ^Build_Context, steps: ..Step) -> (step: Step, err: Allo
 }
 
 // Using the `hasher`, it will determine whether the step belongs in the overall build.
-plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step) -> (step: Maybe(Step), err: Error) {
+plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     base_fingerprint_v := run_hasher(fingerprint)
     if cachefs.hash_exists(&ctx.cache_file_system, base_fingerprint_v) {
         path := cachefs.path_from_hash(&ctx.cache_file_system, base_fingerprint_v) or_return
@@ -625,10 +750,10 @@ plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step) -> (step: M
         full_fingerprint_v := base_fingerprint_v ~ run_hasher(ctx.state_fingerprint)
         hex_hash_buf: [17]byte
         hex_hash := strconv.write_uint(hex_hash_buf[:], full_fingerprint_v, 16)
-        orig_data := os2.read_entire_file(path, context.allocator) or_return
+        orig_data := ta_os2_read_entire_file(path, context.allocator) or_return
         defer delete(orig_data)
         if strings.compare(hex_hash, transmute(string)orig_data) == 0 do return nil, nil
-        os2.write_entire_file(path, hex_hash) or_return
+        ta_os2_write_entire_file(path, hex_hash) or_return
         return s, nil
     } else {
         client_data := State_Hasher_Client_Data{ ctx=ctx, exclude=nil }
@@ -637,14 +762,19 @@ plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step) -> (step: M
         path := cachefs.create_from_hash(&ctx.cache_file_system, base_fingerprint_v) or_return
         hex_hash_buf: [17]byte
         hex_hash := strconv.write_uint(hex_hash_buf[:], full_fingerprint_v, 16)
-        os2.write_entire_file(path, hex_hash) or_return
+        ta_os2_write_entire_file(path, hex_hash) or_return
         return s, nil
     }
 }
 
 Fingerprint_Target :: union($T: typeid) { T, Hasher }
 
-fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher, caller_location := #caller_location) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     context.logger = ctx.logger
 
     log.infof("[START] Creating fingerprint for targets.")
@@ -669,7 +799,12 @@ fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher) -> (output: Hasher, 
     return output, nil
 }
 
-files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string), dir_glob_patterns: []string = { "*" }, file_glob_patterns: []string = {}) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string), dir_glob_patterns: []string = { "*" }, file_glob_patterns: []string = {}, caller_location := #caller_location) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+    
     context.logger = ctx.logger
     
     log.infof("[START] Creating fingerprint targets from file targets.")

@@ -1,13 +1,31 @@
 package build
 import "core:fmt"
+import "core:mem"
 
 import obi "../.."
+import subprocess "../../subprocess"
 
-build :: proc() -> obi.Error {
-    ctx := obi.create_build_context() or_return 
-    defer obi.destroy_build_context(&ctx)
+build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
+    when ODIN_DEBUG {
+        track: mem.Tracking_Allocator
+
+        mem.tracking_allocator_init(&track, context.allocator)
+        context.allocator = mem.tracking_allocator(&track)
     
-    ctx.logger = obi.create_build_logger(&ctx) or_return
+        defer {
+            if len(track.allocation_map) > 0 {
+                fmt.eprintf("=== %v allocations not freed (BUILD) ===\n", len(track.allocation_map))
+                for _, entry in track.allocation_map {
+                    fmt.eprintf("- %v bytes @ %v  %v\n", entry.size, entry.location, entry.memory)
+                }
+            }
+            mem.tracking_allocator_destroy(&track)
+        }
+    }
+
+    ctx = obi.create_build_context() or_return
+    ctx.verbose_debug = true    
+    ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
 
     // --- C IMPORT ARGS 3.3.0 ---
     {
@@ -41,6 +59,7 @@ build :: proc() -> obi.Error {
             extra_flags={}
         }
         build_step := obi.to_step(&ctx, &build_cmd) or_return
+        build_step.name = "build obi_cli"
 
         planned_build_step := obi.plan_step(&ctx,
             obi.files_fingerprint(&ctx, ".", "third_party", file_glob_patterns={ "*.odin", "*.sjson" }) or_return,
@@ -55,10 +74,18 @@ build :: proc() -> obi.Error {
 
     obi.build(&ctx) or_return
     
-    return nil
+    return ctx, nil
 }
 
 main :: proc() { 
-    err := build()
-    fmt.assertf(err == nil, "Build failed. (%v)", err)
+    err: obi.Error
+    build_ctx: obi.Build_Context
+
+    err = obi.init()
+    fmt.assertf(err == nil, "build initiation failed. (%v)", err)
+    defer obi.deinit()
+
+    build_ctx, err = build()
+    fmt.assertf(err == nil, "build failed. (%v)\nTRACEBACK:\n%s\n", err, obi.blame(&build_ctx, err, allow_newlines=true))
+    
 }

@@ -74,36 +74,32 @@ Make_Error :: enum int {
 }
 
 // Construct an `Sub_Process_Command` that expresses the specified `Make` object.
-make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Process_Command, err: Error) {
+make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #caller_location) -> (cmd_p: ^Sub_Process_Command, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     make_path: string = ---
     {
         found := false
         compatible := card(m.compatibility) == 0 ? ASSUMED_DEFAULT_MAKE_TYPES : m.compatibility
         if card(compatible) > 0 {
             if .GNU in compatible {
-                make_path, found = subprocess.which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                make_path, found = ta_subprocess_which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
             }
             if .BSD in compatible && !found {
-                make_path, found = subprocess.which("bmake", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                make_path, found = ta_subprocess_which("bmake", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
             }
             if .MingW32 in compatible && !found {
-                make_path, found = subprocess.which("mingw32-make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                make_path, found = ta_subprocess_which("mingw32-make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
                 if !found {
-                    make_path, found = subprocess.which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                    make_path, found = ta_subprocess_which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
                 }
             }
         }
 
         if !found do return nil, Make_Error.Incompatible_Or_No_Make_Program
-    }
-
-    for len(make_path) > 0 {
-        last := make_path[len(make_path)-1]
-        if last == '\n' || last == '\r' {
-            make_path = make_path[0:len(make_path)-1]
-        } else {
-            break
-        }
     }
 
     command_size := 1 // make
@@ -170,7 +166,12 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make) -> (cmd_p: ^Sub_Proces
     return cmd_p, nil
 }
 
-make_to_step :: proc(ctx: ^Build_Context, m: ^Make) -> (step: Step, err: Error) {
+make_to_step :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #caller_location) -> (step: Step, err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     cmd := make_to_subprocess(ctx, m) or_return
     return subprocess_to_step(ctx, cmd)
 }

@@ -186,6 +186,8 @@ run :: proc(cmd: Command, allocator := context.allocator) -> (state: State, stdo
 // Cross platform method to ensure you can find or ensure the existence of a program.  
 // **NOTE**: The local search, after the global, will only search the `cwd` and will NOT walk subdirectories for safety.
 which :: proc(name: string, allocator := context.allocator, cwd := "",  search_local := false) -> (path: string, found: bool, err: Error) {
+    cwd := cwd
+    
     cmd := Command{
         working_dir=cwd,
         command={"where" when ODIN_OS == .Windows else "which", name},
@@ -194,11 +196,23 @@ which :: proc(name: string, allocator := context.allocator, cwd := "",  search_l
     }
     state, stdout, stderr := run(cmd, allocator) or_return
     defer delete(stderr)
+    //defer delete(stdout)
 
     path = transmute(string)stdout
+    for len(path) > 0 {
+        last := path[len(path)-1]
+        if last == '\n' || last == '\r' {
+            path = path[0:len(path)-1]
+        } else {
+            break
+        }
+    }
+    
     found = (state.exit_code == 0 when ODIN_OS == .Windows else state.success) && os2.exists(path)
 
     if !found && search_local {
+        if len(cwd) == 0 do cwd = "."
+
         f := os2.open(cwd) or_return
 	    defer os2.close(f)
 
