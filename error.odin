@@ -10,13 +10,26 @@ import "base:runtime"
 
 import vs "visual_studio"
 import gc "garbage_collector"
+import cu "bindgen/c/clang_util"
+import lc "bindgen/c/clang_util/libclang"
 
 // Takes an error and provides more context on which PACKAGE it may have come from.
 sb_expand_error :: proc(err: Error, sb: ^strings.Builder) {
     switch underlying_err1 in err {
-        case C_Import_Error:
-            fmt.sbprint(sb, "C_Import_Error -> ")
-            sb_expand_error(underlying_err1, sb)
+        case C_Bindgen_Parser_Error:
+            fmt.sbprint(sb, "C_Bindgen_Parser_Error -> ")
+            switch underlying_err2 in underlying_err1 {
+                case cu.Error:
+                    fmt.sbprint(sb, "clang_util.Error -> ")
+                    switch underlying_err3 in underlying_err2 {
+                        case lc.Error_Code:
+                            fmt.sbprint(sb, "clang_util.Error -> ", underlying_err3, sep="")
+                        case Allocator_Error:
+                            fmt.sbprint(sb, "Allocator_Error -> ", underlying_err3, sep="")
+                    }
+                case Allocator_Error:
+                    fmt.sbprint(sb, "Allocator_Error -> ", underlying_err2, sep="")
+            }
         case Cache_File_System_Error:
             fmt.sbprint(sb, "Cache_File_System_Error -> ")
             sb_expand_error(underlying_err1, sb)

@@ -18,9 +18,15 @@ import "core:mem"
 Allocator :: mem.Allocator
 Allocator_Error :: mem.Allocator_Error
 
-import ci "cimport"
-C_Import_Error :: ci.Error
-C_Import_Info :: ci.Import_Info
+import bindgen "bindgen"
+Bindgen_Factory :: bindgen.Factory
+Bindgen_Emit_Options :: bindgen.Emit_Options
+Bindgen_Foriegn_Get :: bindgen.Foreign_Get
+Bindgen_Foreign_Import_Expr :: bindgen.Foreign_Import_Expr
+Bindgen_Foreign_Import_Path :: bindgen.Foreign_Import_Path
+import cbindgen "bindgen/c"
+C_Bindgen_Parser_Error :: cbindgen.Parser_Error
+C_Bindgen_Parser_Options :: cbindgen.Parse_Options
 
 import cachefs "cache_fs"
 Cache_File_System_Error :: cachefs.Error
@@ -36,7 +42,7 @@ GC_Error :: gc.Error
 Garbage_Collector :: gc.Garbage_Collector
 
 Error :: union #shared_nil {
-    C_Import_Error,
+    C_Bindgen_Parser_Error,
     Cache_File_System_Error,
     Sub_Process_Error,
     Allocator_Error,
@@ -46,7 +52,7 @@ Error :: union #shared_nil {
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
-DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_api"
+DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_export"
 
 // Same as Odin_OS_Type
 OS_Type :: enum int {
@@ -178,7 +184,7 @@ Build_Context :: struct {
     // The cache file system.
     cache_file_system: Cache_File_System,
     // Default parent directory for `C_Import_Info` objects.  
-    // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_folder` to customize it for that specific object.
+    // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_directory` to customize it for that specific object.
     c_import_output_path: string,
     // Sequence of steps to run, to complete the build.
     steps: [dynamic]Step,
@@ -253,11 +259,11 @@ Default_State_Hasher :: Hasher {
     client_data=nil
 }
 
-@(private)
-_C_Import_Info_Client_Data :: struct {
-    info: ^C_Import_Info,
-    ctx: ^Build_Context
-}
+// @(private)
+// _C_Bindgen_Info_Client_Data :: struct {
+//     ,
+//     ctx: ^Build_Context
+// }
 
 @(private)
 _manage_slice :: proc(ctx: ^Build_Context, data: $T/[]$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
@@ -508,7 +514,6 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, calle
     }
     return step, err
 }
-
 os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
     _start_trace()
     _trace(caller_location)
@@ -607,40 +612,44 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
     return nil
 }
 
-/* Include header file paths, or directory paths (all header files will be captured) to `C_Import_Info` object.
-*/
-c_include :: proc(info: ^C_Import_Info, paths: ..string, caller_location := #caller_location) -> (err: Allocator_Error) {
-    _start_trace()
-    _trace(caller_location)
-    _trace()
-    defer if err == nil do _backtrace()
+C_Import_Info :: struct {
+    factory: Bindgen_Factory,
+    path: string,
+    output_directory: string,
+    emit_options: Bindgen_Emit_Options,
+    parser_options: C_Bindgen_Parser_Options,
 
-    ci.include(info, ..paths) or_return
-    return nil
 }
 
-/* Creates and manages a new `C_Import_Info` object. You can edit the properties of `info` to adjust how you want the specified headers to be
-   parsed.  
-   **NOTE:** You can add more include paths, using `c_include`.
+/*
 */
-c_import :: proc(ctx: ^Build_Context, package_name: string, include_paths: ..string, caller_location := #caller_location) -> (info: ^C_Import_Info, err: Error) {
+c_import :: proc(
+    ctx: ^Build_Context, 
+    path: string, 
+    emit_options := Bindgen_Emit_Options{},
+    caller_location := #caller_location
+) -> (info: ^C_Import_Info, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
-    info = ci.make_import_info(&ctx.cache_file_system, gc.allocator(&ctx.garbage_collector)) or_return
-    info.package_name = package_name
-    output_folder := filepath.join({ ctx.c_import_output_path, info.package_name }, ctx.allocator) or_return
-    defer delete(output_folder) 
-    info.output_folder = _manage_mem(ctx, output_folder) or_return
-    c_include(info, ..include_paths) or_return
+    info = new(C_Import_Info, gc.allocator(&ctx.garbage_collector))    
+    info.factory = bindgen.make_factory(ctx.allocator) or_return
+    info.path = path
+    info.emit_options = emit_options
+    type_aliases := cbindgen.make_type_aliases(allocator=gc.allocator(&ctx.garbage_collector)) or_return
+    info.parser_options.keep_stdlib = true
+    info.parser_options.type_aliases = type_aliases
+    info.parser_options.discard_comments = false
+    info.parser_options.extra_imports = make(map[string]string, gc.allocator(&ctx.garbage_collector))
+    info.parser_options.opaque_type_name = nil // Auto-generated
+    info.output_directory = filepath.join({ ctx.c_import_output_path, info.emit_options.package_name }, ctx.allocator) or_return
     return info, nil
 }
 
 /* Parses the information provided, and generates the respective bindings.  
-   **NOTE:** Try to avoid using it on info provided from `c_import`, everything would work as intended, however this process would 
-   uneccessarily be ran twice, instead convert it to a step (`to_step`) and add it to the build process (`add_step`)
+   **NOTE:** This will destroy all core resources for the specific import, meaning it can no longer be used.
 */
 c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (err: Error) {
     _start_trace()
@@ -648,8 +657,27 @@ c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location
     _trace()
     defer if err == nil do _backtrace()
 
-    ci.import_info(info, ctx.allocator) or_return
+    cbindgen.parse(&info.factory, info.path, info.parser_options)
+    temp_sb := strings.builder_make() or_return
+    export_content := bindgen.emit_factory(&info.factory, &temp_sb, info.emit_options)
+    output_filename := filepath.base(info.path)
+    output_filename = output_filename[:len(output_filename)-len(filepath.long_ext(output_filename))]
+    output_filename = strings.concatenate({ output_filename, ".odin" }, ctx.allocator) or_return
+    defer delete(output_filename)
+    output_path := filepath.join({ info.output_directory, output_filename }, ctx.allocator) or_return
+    defer delete(output_path)
+    if !os2.exists(info.output_directory) {
+        os2.make_directory_all(info.output_directory) or_return
+    }
+    os2.write_entire_file(output_path, export_content) or_return
+    strings.builder_destroy(&temp_sb)
+    bindgen.destroy_factory(&info.factory)
     return nil
+}
+
+@private _C_Bindgen_Info_Client_Data :: struct {
+    info: ^C_Import_Info,
+    ctx: ^Build_Context
 }
 
 c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (step: Step, err: Error) {
@@ -658,13 +686,13 @@ c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_
     _trace()
     defer if err == nil do _backtrace()
 
-    client_data := _C_Import_Info_Client_Data{
+    client_data := _C_Bindgen_Info_Client_Data{
         info=info,
         ctx=ctx
     }
     step.client_data = _manage_mem(ctx, &client_data) or_return
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
-        ciicd := transmute(^_C_Import_Info_Client_Data)client_data
+        ciicd := transmute(^_C_Bindgen_Info_Client_Data)client_data
         c_import_info(ciicd.ctx, ciicd.info) or_return
         return true, nil
     }
