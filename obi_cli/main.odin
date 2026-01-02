@@ -4,5 +4,5 @@ import "core:fmt"
 import "core:os"
 
 main :: proc() {
-//d dede
+    
 }

@@ -14,6 +14,8 @@ import "core:strconv"
 
 import "base:runtime"
 
+VERBOSE_LOG :: #config(VERBOSE, false)
+
 Clang_Error :: cu.Error
 Allocator_Error :: mem.Allocator_Error
 
@@ -44,7 +46,7 @@ Parse_Options :: struct {
     // If set, the main opaque type alias would have this name, otherwise, the name will be automatically generated.
     opaque_type_name: Maybe(string),
     // key=alias, value=import
-    extra_imports: map[string]string 
+    extra_imports: map[string]string
 }
 
 Default_Type_Alias :: enum u8 {
@@ -147,7 +149,7 @@ make_non_base_data :: proc(allocator := context.allocator) -> (data: Non_Base_Da
 }
 destroy_non_base_data :: proc(data: ^Non_Base_Data) -> (err: Allocator_Error) {
     log.info("Destroying non-base data ...")
-    log.debugf("%#v", data)
+    //when VERBOSE_LOG do log.debugf("%#v", data)
     defer {
         if err == nil do log.infof("[DONE]")
         else do log.errorf("[FAIL]")
@@ -290,8 +292,8 @@ DEFAULT_VISITOR_OPTIONS :: cu.Visitor_Options{
 get_decl :: proc(factory: ^gb.Factory, T: cu.Type) -> (out_decl: ^gb.Decl, err: cu.Visitor_Error) {
     log.infof("Attempting to get declaration for `%v` ...", T)
     defer {
-        if err == nil do log.infof("[DONE] Result: %#v", out_decl)
-        else do log.errorf("[FAIL] (%v)", err)
+        if err == nil { when VERBOSE_LOG { log.infof("[DONE] Result: %#v", out_decl) } else { log.infof("[DONE] Attempting to get declaration.") } }
+        else { log.errorf("[FAIL] (%v)", err) }
     }
     ident := is_valid_builtin(T) ? builtin_typeid_alias(parse_builtin_as_typeid(T)) or_return : strings.clone(T.ident) or_return
     defer delete(ident)
@@ -307,8 +309,8 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
 
     log.infof("Attempting to resolve declaration for `%v` ...", T)
     defer {
-        if err == nil do log.infof("[DONE] Result: %#v", out_decl)
-        else do log.errorf("[FAIL] (%v)", err)
+        if err == nil { when VERBOSE_LOG { log.infof("[DONE] Result: %#v", out_decl) } else { log.infof("[DONE] Attempting to resolve declaration.") } }
+        else { log.errorf("[FAIL] (%v)", err) }
     }
     nonbase := transmute(^Non_Base_Data)factory.nonbase_data
     
@@ -376,7 +378,7 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
         if !nil_usr_fl {
             usr_str = cu.getString(usr)
             fl, exists := nonbase.resolving_usr[usr_str]
-            log.infof("Checking against USR string... (%q, can_visit=%t)", usr_str, !(exists && fl))
+            when VERBOSE_LOG do log.infof("Checking against USR string... (%q, can_visit=%t)", usr_str, !(exists && fl))
             if exists && fl {
                 // Recursive reference, return placeholder or nil
                 return nil, nil
@@ -393,7 +395,7 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
         cu.visitChildren(decl_cursor, visit_type, sm, factory, DEFAULT_VISITOR_OPTIONS) or_return
 
         if !nil_usr_fl {
-            log.infof("Setting the USR %q as seen.", usr_str)
+            when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
             nonbase.seen_usr[usr_str] = true
         }
 
@@ -420,7 +422,7 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
     if !nil_usr_fl {
         usr_str = cu.getString(usr)
         fl, exists := nonbase.seen_usr[usr_str]
-        log.infof("Checking against USR string... (%q, can_visit=%t)", usr_str, !(exists && fl))
+        when VERBOSE_LOG do log.infof("Checking against USR string... (%q, can_visit=%t)", usr_str, !(exists && fl))
         if exists && fl {
             return .Continue, nil
         }
@@ -487,10 +489,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             }
             if comment, ok := maybe_comment.?; ok do out_decl.comment = strings.clone(comment, gb.decl_factory_allocator(&factory.decls)) or_return
 
-            log.infof("Parsed enum: %#v", out_decl)
+            when VERBOSE_LOG {
+                log.infof("Parsed enum: %#v", out_decl)
+            } else {
+                log.infof("Parsed enum: %q", cursor.ident)
+            }
 
             if !nil_usr_fl {
-                log.infof("Setting the USR %q as seen.", usr_str)
+                when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
                 nonbase.seen_usr[usr_str] = true
             }
 
@@ -572,10 +578,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             }
             if comment, ok := maybe_comment.?; ok do out_decl.comment = strings.clone(comment, gb.decl_factory_allocator(&factory.decls)) or_return
 
-            log.infof("Parsed record: %#v", out_decl)
+            when VERBOSE_LOG {
+                log.infof("Parsed record: %#v", out_decl)
+            } else {
+                log.infof("Parsed record: %q", cursor.ident)
+            }
 
             if !nil_usr_fl {
-                log.infof("Setting the USR %q as seen.", usr_str)
+                when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
                 nonbase.seen_usr[cu.getString(usr)] = true
             }
 
@@ -599,10 +609,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 }
                 if comment, ok := maybe_comment.?; ok do out_decl.comment = strings.clone(comment, gb.decl_factory_allocator(&factory.decls)) or_return
                 
-                log.infof("Parsed opaque typedef: %#v", out_decl)
+                when VERBOSE_LOG {
+                    log.infof("Parsed opaque typedef: %#v", out_decl)
+                } else {
+                    log.infof("Parsed opaqeue typedef: %q", cursor.ident)
+                }
 
                 if !nil_usr_fl {
-                    log.infof("Setting the USR %q as seen.", usr_str)
+                    when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
                     nonbase.seen_usr[cu.getString(usr)] = true
                 }
                 
@@ -625,10 +639,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             }
             if comment, ok := maybe_comment.?; ok do out_decl.comment = strings.clone(comment, gb.decl_factory_allocator(&factory.decls)) or_return
 
-            log.infof("Parsed typedef: %#v", out_decl)
+            when VERBOSE_LOG {
+                log.infof("Parsed typedef: %#v", out_decl)
+            } else {
+                log.infof("Parsed typedef: %q", cursor.ident)
+            }
 
             if !nil_usr_fl {
-                log.infof("Setting the USR %q as seen.", usr_str)
+                when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
                 nonbase.seen_usr[cu.getString(usr)] = true
             }
     
@@ -687,10 +705,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 out_decl.variant = func_decl
                 if comment, ok := maybe_comment.?; ok do out_decl.comment = strings.clone(comment, gb.decl_factory_allocator(&factory.decls)) or_return
 
-                log.infof("Parsed function: %#v", out_decl)
+                when VERBOSE_LOG {
+                    log.infof("Parsed function: %#v", out_decl)
+                } else {
+                    log.infof("Parsed function: %q", cursor.ident)
+                }
 
                 if !nil_usr_fl {
-                    log.infof("Setting the USR %q as seen.", usr_str)
+                    when VERBOSE_LOG do log.infof("Setting the USR %q as seen.", usr_str)
                     nonbase.seen_usr[cu.getString(usr)] = true
                 }
             }
@@ -973,70 +995,6 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
         opaque_decl.privacy = .File_Private
         append(&valid_decls, opaque_decl) or_return
 
-        // _try_decr_func_ptr_depth :: proc(slot: ^^gb.Decl) -> bool {
-        //     if slot^ == nil do return false
-
-        //     decl := slot^
-
-        //     #partial switch &internal in decl.variant {
-            
-        //     case gb.Pointer_Decl:
-        //         // Collapse only if pointer directly wraps a function type
-        //         if type_decl, ok := internal.underlying.variant.(gb.Type_Decl); ok {
-        //             if _, is_func := type_decl.info.(gb.Func_Info); is_func {
-        //                 slot^ = internal.underlying
-        //                 return true
-        //             }
-        //         }
-        //         // Otherwise, recurse down the pointer
-        //         return _try_decr_func_ptr_depth(&internal.underlying)
-            
-        //     case gb.Alias_Decl:
-        //         // Recurse through alias
-        //         return _try_decr_func_ptr_depth(&internal.underlying)
-            
-        //     case gb.Type_Decl:
-        //         #partial switch &info in internal.info {
-                
-        //         case gb.Struct_Info:
-        //             for &f in info.fields {
-        //                 if _try_decr_func_ptr_depth(&f.type) do return true
-        //             }
-                
-        //         case gb.Union_Info:
-        //             for &f in info.fields {
-        //                 if _try_decr_func_ptr_depth(&f.type) do return true
-        //             }
-                
-        //         case gb.Func_Info:
-        //             // Traverse parameters and return type but do not collapse inside
-        //             _try_decr_func_ptr_depth(&info.return_decl)
-        //             for &p in info.param_decls {
-        //                 _try_decr_func_ptr_depth(&p)
-        //             }
-        //             return false
-                
-        //         case gb.Enum_Info, gb.Builtin_Info:
-        //             return false
-        //         }
-            
-        //         return false
-            
-        //     case gb.Func_Decl:
-        //         // Traverse parameters and return type but do not collapse
-        //         _try_decr_func_ptr_depth(&internal.return_type)
-        //         for &p in internal.params {
-        //             _try_decr_func_ptr_depth(&p.type)
-        //         }
-        //         return false
-            
-        //     case gb.Unknown_Alias_Decl:
-        //         return false
-        //     }
-        
-        //     return false
-        // }
-
         pointer_decls := make([dynamic]^gb.Decl) or_return
         for decl in valid_decls {
             if decl == nil do continue
@@ -1052,23 +1010,6 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                             }
                         }
                     }
-                    // else if pointer_decl, is_pointer_decl := internal.underlying.variant.(gb.Pointer_Decl); is_pointer_decl {
-                    //     if type_decl, is_type_decl := pointer_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
-                    //         if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
-                    //             type_decl.name = internal.name
-                    //             decl.variant = type_decl
-
-                    //             underlying_index, found_underlying_index := slice.linear_search(valid_decls[:], pointer_decl.underlying)
-                    //             when ODIN_DEBUG do assert(found_underlying_index) // NOTE: No one should see this error.
-                    //             pointer_index, found_pointer_index := slice.linear_search(valid_decls[:], decl)
-                    //             when ODIN_DEBUG do assert(found_pointer_index) // NOTE: No one should see this error.
-
-                    //             remove_index(&valid_decls, underlying_index)
-                    //             remove_index(&valid_decls, pointer_index)
-                    //             continue
-                    //         }
-                    //     }
-                    // }
                 case gb.Pointer_Decl:
                     append(&pointer_decls, decl)
             }

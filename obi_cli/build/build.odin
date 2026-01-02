@@ -26,6 +26,7 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
     ctx = obi.create_build_context() or_return
     ctx.verbose_debug = true    
     ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
+    defer obi.destroy_build_logger(&ctx, ctx.logger)
 
     // --- C IMPORT ARGS 3.3.0 ---
     {

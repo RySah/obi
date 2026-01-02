@@ -348,6 +348,10 @@ create_build_logger :: #force_inline proc(ctx: ^Build_Context, subdomain := "", 
     ), nil
 }
 
+destroy_build_logger :: #force_inline proc(ctx: ^Build_Context, logger: log.Logger) {
+    log.destroy_console_logger(logger, ctx.allocator)
+}
+
 /* Creates a `Build_Context`, essential for any builds.
 */
 create_build_context :: proc(
@@ -642,7 +646,7 @@ c_import :: proc(
     info.parser_options.keep_stdlib = true
     info.parser_options.type_aliases = type_aliases
     info.parser_options.discard_comments = false
-    info.parser_options.extra_imports = make(map[string]string, gc.allocator(&ctx.garbage_collector))
+    info.parser_options.extra_imports = make(map[string]string, ctx.allocator)
     info.parser_options.opaque_type_name = nil // Auto-generated
     info.output_directory = filepath.join({ ctx.c_import_output_path, info.emit_options.package_name }, ctx.allocator) or_return
     return info, nil
@@ -672,6 +676,8 @@ c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location
     os2.write_entire_file(output_path, export_content) or_return
     strings.builder_destroy(&temp_sb)
     bindgen.destroy_factory(&info.factory)
+    delete(info.output_directory, ctx.allocator)
+    delete(info.parser_options.extra_imports)
     return nil
 }
 
@@ -900,6 +906,7 @@ files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(str
                                     path := path_ptr^
                                     if !os2.exists(path) do return empty_hasher_procedure(client_data)
                                     b, b_err := os2.read_entire_file(path, context.allocator)
+                                    defer delete(b)
                                     if b_err != nil do return empty_hasher_procedure(client_data)
                                     return hash_algo.murmur64a(b)
                                 },
