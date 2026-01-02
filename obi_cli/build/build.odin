@@ -37,10 +37,21 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
         make_step := obi.to_step(&ctx, &make_cmd) or_return
         make_step.name = "making args-3.3.0"
 
-        api_import_info := obi.c_import(&ctx, "args3", "third_party/args-3.3.0/src/args.h") or_return
-        api_import_info.type_name_case = .Ada_Case
-        api_import_info.function_name_case = .Snake_Case
-        api_import_info.lib = "third_party/args-3.3.0/build/libargs.a"
+        api_import_info := obi.c_import(
+            &ctx, 
+            "third_party/args-3.3.0/src/args.h",
+            emit_options=obi.Bindgen_Emit_Options{
+                package_name="args3",
+                foreign_import=obi.Bindgen_Foriegn_Get{
+                    alias="libarg3",
+                    expr=obi.Bindgen_Foreign_Import_Path("third_party/args-3.3.0/build/libargs.a")
+                },
+                cases= #partial {
+                    .Type=.Ada,
+                    .Function=.Snake
+                }
+            }
+        ) or_return
         api_import_step := obi.to_step(&ctx, api_import_info) or_return
         api_import_step.name = "importing api-3.3.0 api"
 

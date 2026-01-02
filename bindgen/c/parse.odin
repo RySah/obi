@@ -1,6 +1,5 @@
 package bindgen_c
 
-import "core:../../2025-12/core/container/queue"
 import gb ".."
 import cu "clang_util"
 import clang "clang_util/libclang"
