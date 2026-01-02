@@ -171,7 +171,9 @@ Pointer_Decl :: struct {
 
 Unknown_Alias_Decl :: struct {
     name: string,
-    expr: string
+    expr: string,
+    // If set to `true`, this alias will only be used to replace an existing declaration with the same name, otherwise, it wont emit at all.
+    replace_only: bool
 }
 
 Decl_Privacy :: enum u8 {
@@ -251,7 +253,8 @@ get_name :: proc(decl: ^Decl) -> string {
         case Alias_Decl:
             return internal.name
         case Pointer_Decl:
-            return "/*pointer*/" // Should be unknown.
+            //return "/*pointer*/" // Should be unknown.
+            return get_name(internal.underlying)
         case Unknown_Alias_Decl:
             return internal.name
     }
@@ -390,6 +393,15 @@ get_unknown_alias :: proc(decl: ^Decl, shallow := false) -> ^Unknown_Alias_Decl 
             return get_unknown_alias(internal.underlying)
     }
     return nil
+}
+
+get_base :: proc(decl: ^Decl) -> ^Decl {
+    #partial switch &internal in decl.variant {
+        case Alias_Decl:
+            return get_base(internal.underlying)
+        case:
+            return decl
+    }
 }
 
 Case :: enum u8 {

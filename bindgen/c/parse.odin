@@ -40,7 +40,7 @@ Parse_Options :: struct {
     // 
     // Some_Record_Or_Enum_Or_Function :: [NEW_CONTENT]
     //
-    // **WARNING**: Use `make_type_aliases(with_suggested=true)` rather than leaving it empty to use the suggested type aliases for correct bindings.
+    // **TIP**: Use `make_type_aliases(defaults=...)` to set this field rather than leaving it empty, to cleanup some names from the included C standard libaries if naming cases are changed during emission.
     type_aliases: []gb.Unknown_Alias_Decl,
     // If set, the main opaque type alias would have this name, otherwise, the name will be automatically generated.
     opaque_type_name: Maybe(string),
@@ -48,18 +48,80 @@ Parse_Options :: struct {
     extra_imports: map[string]string 
 }
 
+Default_Type_Alias :: enum u8 {
+    None,
+    // <stdint.h>
+    Std_Int,
+    // e.g. size_t, ptrdiff_t, intptr_t, take a look at `make_type_aliases` for full lists.
+    Std_Core
+}
+Default_Type_Alias_Set :: bit_set[Default_Type_Alias]
+
+Basic_Default_Type_Alias :: Default_Type_Alias_Set {
+    .Std_Int,
+    .Std_Core
+} 
+
 make_type_aliases :: proc(
     a: ..gb.Unknown_Alias_Decl, 
     allocator := context.allocator, 
-    with_suggested := true
+    defaults := Basic_Default_Type_Alias
 ) -> (arr: []gb.Unknown_Alias_Decl, err: mem.Allocator_Error) #optional_allocator_error {
     context.allocator = allocator
-    _SUGGESTED :: []gb.Unknown_Alias_Decl{
-        { name="size_t", expr="c.size_t" }
+    _STD_INT :: [?]gb.Unknown_Alias_Decl {
+        { name="int8_t", expr="c.int8_t", replace_only=true },
+        { name="int16_t", expr="c.int16_t", replace_only=true },
+        { name="int32_t", expr="c.int32_t", replace_only=true },
+        { name="int64_t", expr="c.int64_t", replace_only=true },
+        { name="uint8_t", expr="c.uint8_t", replace_only=true },
+        { name="uint16_t", expr="c.uint16_t", replace_only=true },
+        { name="uint32_t", expr="c.uint32_t", replace_only=true },
+        { name="uint64_t", expr="c.uint64_t", replace_only=true },
+        { name="int_least8_t", expr="c.int_least8_t", replace_only=true },
+        { name="int_least16_t", expr="c.int_least16_t", replace_only=true },
+        { name="int_least32_t", expr="c.int_least32_t", replace_only=true },
+        { name="int_least64_t", expr="c.int_least64_t", replace_only=true },
+        { name="uint_least8_t", expr="c.uint_least8_t", replace_only=true },
+        { name="uint_least16_t", expr="c.uint_least16_t", replace_only=true },
+        { name="uint_least32_t", expr="c.uint_least32_t", replace_only=true },
+        { name="uint_least64_t", expr="c.uint_least64_t", replace_only=true },
+        { name="int_fast8_t", expr="c.int_fast8_t", replace_only=true },
+        { name="int_fast16_t", expr="c.int_fast16_t", replace_only=true },
+        { name="int_fast32_t", expr="c.int_fast32_t", replace_only=true },
+        { name="int_fast64_t", expr="c.int_fast64_t", replace_only=true },
+        { name="uint_fast8_t", expr="c.uint_fast8_t", replace_only=true },
+        { name="uint_fast16_t", expr="c.uint_fast16_t", replace_only=true },
+        { name="uint_fast32_t", expr="c.uint_fast32_t", replace_only=true },
+        { name="uint_fast64_t", expr="c.uint_fast64_t", replace_only=true },
+        { name="intmax_t", expr="c.intmax_t", replace_only=true },
+        { name="uintmax_t", expr="c.uintmax_t", replace_only=true }
     }
-    arr = make([]gb.Unknown_Alias_Decl, len(a)+(with_suggested ? len(_SUGGESTED) : 0)) or_return
+    _STD_CORE :: [?]gb.Unknown_Alias_Decl {
+        { name="size_t", expr="c.size_t", replace_only=true },
+        { name="ssize_t", expr="c.ssize_t", replace_only=true },
+        { name="ptrdiff_t", expr="c.ptrdiff_t", replace_only=true },
+        { name="intptr_t", expr="c.intptr_t", replace_only=true },
+        { name="uintptr_t", expr="c.uintptr_t", replace_only=true },
+        { name="wchar_t", expr="c.wchar_t", replace_only=true }
+    }
+
+    extra_len := 0
+    if .Std_Int in defaults do extra_len += len(_STD_INT)
+    if .Std_Core in defaults do extra_len += len(_STD_CORE)
+    
+    arr = make([]gb.Unknown_Alias_Decl, len(a)+extra_len) or_return
     copy(arr, a)
-    if with_suggested do copy(arr[len(a):], _SUGGESTED)
+    i := len(a)
+    if .Std_Int in defaults {
+        content := _STD_INT
+        copy(arr[i:], content[:])
+        i += len(_STD_INT)
+    }
+    if .Std_Core in defaults {
+        content := _STD_CORE
+        copy(arr[i:], content[:])
+        i += len(_STD_CORE)
+    }
     return arr, nil
 }
 
@@ -872,7 +934,7 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
             owned_alias.expr = strings.clone(alias.expr, gb.decl_factory_allocator(&factory.decls)) or_return
             if found {
                 valid_decls[i].variant = owned_alias 
-            } else {
+            } else if !alias.replace_only {
                 decl := gb.make_decl(&factory.decls, as_item=false) or_return
                 decl.variant = owned_alias
                 append(&valid_decls, decl) or_return
@@ -912,46 +974,178 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
         opaque_decl.privacy = .File_Private
         append(&valid_decls, opaque_decl) or_return
 
-        _try_inline_func_ptr :: proc() {}
+        // _try_decr_func_ptr_depth :: proc(slot: ^^gb.Decl) -> bool {
+        //     if slot^ == nil do return false
 
+        //     decl := slot^
+
+        //     #partial switch &internal in decl.variant {
+            
+        //     case gb.Pointer_Decl:
+        //         // Collapse only if pointer directly wraps a function type
+        //         if type_decl, ok := internal.underlying.variant.(gb.Type_Decl); ok {
+        //             if _, is_func := type_decl.info.(gb.Func_Info); is_func {
+        //                 slot^ = internal.underlying
+        //                 return true
+        //             }
+        //         }
+        //         // Otherwise, recurse down the pointer
+        //         return _try_decr_func_ptr_depth(&internal.underlying)
+            
+        //     case gb.Alias_Decl:
+        //         // Recurse through alias
+        //         return _try_decr_func_ptr_depth(&internal.underlying)
+            
+        //     case gb.Type_Decl:
+        //         #partial switch &info in internal.info {
+                
+        //         case gb.Struct_Info:
+        //             for &f in info.fields {
+        //                 if _try_decr_func_ptr_depth(&f.type) do return true
+        //             }
+                
+        //         case gb.Union_Info:
+        //             for &f in info.fields {
+        //                 if _try_decr_func_ptr_depth(&f.type) do return true
+        //             }
+                
+        //         case gb.Func_Info:
+        //             // Traverse parameters and return type but do not collapse inside
+        //             _try_decr_func_ptr_depth(&info.return_decl)
+        //             for &p in info.param_decls {
+        //                 _try_decr_func_ptr_depth(&p)
+        //             }
+        //             return false
+                
+        //         case gb.Enum_Info, gb.Builtin_Info:
+        //             return false
+        //         }
+            
+        //         return false
+            
+        //     case gb.Func_Decl:
+        //         // Traverse parameters and return type but do not collapse
+        //         _try_decr_func_ptr_depth(&internal.return_type)
+        //         for &p in internal.params {
+        //             _try_decr_func_ptr_depth(&p.type)
+        //         }
+        //         return false
+            
+        //     case gb.Unknown_Alias_Decl:
+        //         return false
+        //     }
+        
+        //     return false
+        // }
+
+        pointer_decls := make([dynamic]^gb.Decl) or_return
         for decl in valid_decls {
             if decl == nil do continue
-            if alias_decl, is_alias_decl := &decl.variant.(gb.Alias_Decl); is_alias_decl {
-                if alias_decl.underlying == nil do continue
-                if type_decl, is_type_decl := alias_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
-                    if builtin_info, has_builtin_info := type_decl.info.(gb.Builtin_Info); has_builtin_info {
-                        if builtin_info.id == typeid_of(gb.c_opaque) {
-                            // Overall alias is opaque.
-                            alias_decl.underlying = opaque_decl
-                            continue
+            #partial switch &internal in decl.variant {
+                case gb.Alias_Decl:
+                    if internal.underlying == nil do continue
+                    if type_decl, is_type_decl := internal.underlying.variant.(gb.Type_Decl); is_type_decl {
+                        if builtin_info, has_builtin_info := type_decl.info.(gb.Builtin_Info); has_builtin_info {
+                            if builtin_info.id == typeid_of(gb.c_opaque) {
+                                // Overall alias is opaque.
+                                internal.underlying = opaque_decl
+                                continue
+                            }
+                        }
+                    }
+                    // else if pointer_decl, is_pointer_decl := internal.underlying.variant.(gb.Pointer_Decl); is_pointer_decl {
+                    //     if type_decl, is_type_decl := pointer_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
+                    //         if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
+                    //             type_decl.name = internal.name
+                    //             decl.variant = type_decl
+
+                    //             underlying_index, found_underlying_index := slice.linear_search(valid_decls[:], pointer_decl.underlying)
+                    //             when ODIN_DEBUG do assert(found_underlying_index) // NOTE: No one should see this error.
+                    //             pointer_index, found_pointer_index := slice.linear_search(valid_decls[:], decl)
+                    //             when ODIN_DEBUG do assert(found_pointer_index) // NOTE: No one should see this error.
+
+                    //             remove_index(&valid_decls, underlying_index)
+                    //             remove_index(&valid_decls, pointer_index)
+                    //             continue
+                    //         }
+                    //     }
+                    // }
+                case gb.Pointer_Decl:
+                    append(&pointer_decls, decl)
+            }
+                
+        }
+        //for &decl in valid_decls do _try_decr_func_ptr_depth(&decl)
+
+        // Handling function pointers.
+        {
+            defer delete(pointer_decls)
+            _is_child :: proc(target: ^gb.Decl, arr: []^gb.Decl) -> bool {
+                for &decl in arr {
+                    if pd, is_pd := &decl.variant.(gb.Pointer_Decl); is_pd {
+                        if pd.underlying == target do return true 
+                    } else do return false
+                }
+                return false
+            }
+            _find_deepest :: proc(root: ^gb.Decl) -> ^gb.Decl {
+                _break_cond :: proc(d: ^gb.Decl) -> bool {
+                    if d == nil do return true
+                    if pointer_decl, is_pointer_decl := d.variant.(gb.Pointer_Decl); is_pointer_decl {
+                        if type_decl, is_type_decl := gb.get_base(pointer_decl.underlying).variant.(gb.Type_Decl); is_type_decl {
+                            if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
+                                return true
+                            }
+                        }
+                    } else do return true // No other children to search
+                    return false
+                }
+                current := root
+                for !_break_cond(current) {
+                    current = current.variant.(gb.Pointer_Decl).underlying
+                }
+                return current
+            }
+            _rem_deepest_from_roots :: proc(arr: []^gb.Decl, to_remove: ^[dynamic]^gb.Decl) {
+                to_upd := make([dynamic]^gb.Decl)
+                defer delete(to_upd)
+                for target in arr {
+                    if !_is_child(target, arr) {
+                        deepest := _find_deepest(target)
+                        if pointer_decl, is_pointer_decl := deepest.variant.(gb.Pointer_Decl); is_pointer_decl {
+                            if type_decl, is_type_decl := pointer_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
+                                if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
+                                    if !slice.contains(to_upd[:], deepest) do append(&to_upd, deepest)
+                                    append(to_remove, pointer_decl.underlying)
+                                }
+                            }
                         }
                     }
                 }
-                else if pointer_decl, is_pointer_decl := alias_decl.underlying.variant.(gb.Pointer_Decl); is_pointer_decl {
-                    if type_decl, is_type_decl := pointer_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
-                        if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
-                            type_decl.name = alias_decl.name
-                            decl.variant = type_decl
-
-                            underlying_index, found_underlying_index := slice.linear_search(valid_decls[:], pointer_decl.underlying)
-                            assert(found_underlying_index) // NOTE: No one should see this error.
-
-                            remove_index(&valid_decls, underlying_index)
-                            continue
+                for &decl in to_upd {
+                    if pointer_decl, is_pointer_decl := decl.variant.(gb.Pointer_Decl); is_pointer_decl {
+                        if type_decl, is_type_decl := pointer_decl.underlying.variant.(gb.Type_Decl); is_type_decl {
+                            if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
+                                decl.variant = pointer_decl.underlying.variant
+                                decl.privacy = pointer_decl.underlying.privacy
+                                decl.comment = pointer_decl.underlying.comment
+                            }
                         }
                     }
                 }
             }
+            to_remove := make([dynamic]^gb.Decl) or_return
+            defer delete(to_remove)
+            _rem_deepest_from_roots(valid_decls[:], &to_remove)
+            write := 0
+            for decl in valid_decls {
+                if !slice.contains(to_remove[:], decl) {
+                    valid_decls[write] = decl
+                    write += 1
+                }
+            }
+            remove_range(&valid_decls, write, len(valid_decls))
         }
-
-        // for decl in valid_decls {
-        //     if decl == nil do continue
-        //     if type_decl, is_type_decl := decl.variant.(gb.Type_Decl); is_type_decl {
-        //         if func_info, has_func_info := type_decl.info.(gb.Func_Info); has_func_info {
-
-        //         }
-        //     }
-        // }
 
         clear(&factory.decls.items)
         for decl in valid_decls {

@@ -34,7 +34,7 @@ main :: proc() {
 	} else {
 		defer bindgen.destroy_factory(&factory)
 
-		type_aliases := cbindgen.make_type_aliases(with_suggested=true)
+		type_aliases := cbindgen.make_type_aliases()
 		defer delete(type_aliases)
 
 		if parser_err := cbindgen.parse(&factory, HEADER_PATH, { keep_stdlib=true, type_aliases=type_aliases }); parser_err != nil {

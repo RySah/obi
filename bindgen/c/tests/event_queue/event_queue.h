@@ -58,10 +58,19 @@ typedef struct EQ_UnknownEventMessage {
 } EQ_UnknownEventMessage;
 
 /* ===========================
+   Opaque queue handle
+   =========================== */
+
+typedef struct EQ_Queue EQ_Queue;
+
+typedef int (*EQ_Callback_T)(char *cmd_name, EQ_Queue *queue);
+
+/* ===========================
     Event payload
     =========================== */
 typedef struct EQ_Event
 {
+    int (**cb)(int, int);
     EQ_EventType type;
     uint64_t     timestamp_ns;
     union {
@@ -81,14 +90,6 @@ typedef struct EQ_Event
         } message;
     } payload;
 } EQ_Event;
-
-/* ===========================
-   Opaque queue handle
-   =========================== */
-
-typedef struct EQ_Queue EQ_Queue;
-
-typedef int (*EQ_Callback_T)(char *cmd_name, EQ_Queue* queue);
 
 /* ===========================
    API functions
