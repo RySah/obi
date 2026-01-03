@@ -56,7 +56,7 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
             "third_party/args-3.3.0/src/args.h",
             emit_options=obi.Bindgen_Emit_Options{
                 package_name="args3",
-                foreign_import=obi.Bindgen_Foriegn_Get{
+                foreign_import=obi.Bindgen_Foreign_Get{
                     alias="libarg3",
                     expr=obi.Bindgen_Foreign_Import_Path("third_party/args-3.3.0/build/libargs.a")
                 },

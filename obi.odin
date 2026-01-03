@@ -30,7 +30,7 @@ Allocator_Error :: mem.Allocator_Error
 import bindgen "bindgen"
 Bindgen_Factory :: bindgen.Factory
 Bindgen_Emit_Options :: bindgen.Emit_Options
-Bindgen_Foriegn_Get :: bindgen.Foreign_Get
+Bindgen_Foreign_Get :: bindgen.Foreign_Get
 Bindgen_Foreign_Import_Expr :: bindgen.Foreign_Import_Expr
 Bindgen_Foreign_Import_Path :: bindgen.Foreign_Import_Path
 import cbindgen "bindgen/c"
