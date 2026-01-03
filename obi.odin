@@ -1,5 +1,8 @@
 package obi
 
+VERBOSE      :: #config(VERBOSE, false)
+THREAD_COUNT :: #config(J, 0)
+
 import "core:fmt"
 import "core:os/os2"
 import "core:path/filepath"
@@ -11,6 +14,12 @@ import hash_algo "core:hash"
 import "core:math/bits"
 import "core:log"
 import "core:strconv"
+import "core:time"
+import "core:thread"
+import "core:sync"
+import thread_safe_allocator "thread_safe/allocator"
+import thread_safe_array "thread_safe/array"
+import "core:os"
 
 import "base:runtime"
 
@@ -174,6 +183,16 @@ deinit :: proc() -> Error {
     return nil
 }
 
+get_requested_thread_count :: proc() -> int {
+    @static value: int
+    @static init_fl: bool
+    if !init_fl {
+        value = THREAD_COUNT==0 ? os.processor_core_count() : min(THREAD_COUNT, os.processor_core_count())
+        init_fl = true
+    }
+    return value
+}
+
 Build_Context :: struct {
     // Allocator
     allocator: Allocator,
@@ -196,8 +215,6 @@ Build_Context :: struct {
     stderr: ^Sub_Process_File,
     // Current working directory
     working_dir: string,
-    // If `true`, debug messages may print objects as output.
-    verbose_debug: bool,
     // This is the hasher that provides a unique value to planned steps, based off the state of its environment.  
     // The **default** hasher will hash all items in the `cache_file_system`, this ensures planned steps will only be
     // ran, if not only provided the fingerprint is the same, but the state of the cache is also the same. Change this value
@@ -648,7 +665,7 @@ c_import :: proc(
     info.parser_options.discard_comments = false
     info.parser_options.extra_imports = make(map[string]string, ctx.allocator)
     info.parser_options.opaque_type_name = nil // Auto-generated
-    info.output_directory = filepath.join({ ctx.c_import_output_path, info.emit_options.package_name }, ctx.allocator) or_return
+    info.output_directory = filepath.join({ ctx.c_import_output_path, info.emit_options.package_name }, gc.allocator(&ctx.garbage_collector)) or_return
     return info, nil
 }
 
@@ -676,7 +693,6 @@ c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location
     os2.write_entire_file(output_path, export_content) or_return
     strings.builder_destroy(&temp_sb)
     bindgen.destroy_factory(&info.factory)
-    delete(info.output_directory, ctx.allocator)
     delete(info.parser_options.extra_imports)
     return nil
 }
@@ -814,7 +830,7 @@ fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher, caller_location := #
     log.infof("[START] Creating fingerprint for targets.")
     failed := true
     defer if failed do log.errorf("[ERROR] Creating fingerprint for targets.")
-    if ctx.verbose_debug do log.debug(targets)
+    when VERBOSE do log.debug(targets)
 
     managed_targets := _manage_mem(ctx, targets) or_return
     managed_targets_ptr := _manage_mem(ctx, &managed_targets) or_return
@@ -833,7 +849,17 @@ fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher, caller_location := #
     return output, nil
 }
 
-files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(string), dir_glob_patterns: []string = { "*" }, file_glob_patterns: []string = {}, caller_location := #caller_location) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+Patterns :: struct {
+    include, exclude: []string
+}
+
+files_fingerprint :: proc(
+    ctx: ^Build_Context, 
+    targets: ..Fingerprint_Target(string), 
+    dir_glob_patterns := Patterns{ include={"*"}, exclude={} }, 
+    file_glob_patterns := Patterns{ include={}, exclude={} }, 
+    caller_location := #caller_location
+) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -842,33 +868,141 @@ files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(str
     context.logger = ctx.logger
     
     log.infof("[START] Creating fingerprint targets from file targets.")
-    failed := true
-    defer if failed do log.errorf("[FAIL] Creating fingerprint for file targets.")
+    defer if err != nil do log.errorf("[FAIL] Creating fingerprint for file targets.")
     log.debug(targets)
 
-    sanitized_targets := make([dynamic]Hasher, 0, len(targets), ctx.allocator) or_return
-    defer delete(sanitized_targets)
+    _single_thread_impl :: proc(
+        ctx: ^Build_Context, 
+        targets: []Fingerprint_Target(string),
+        dir_glob_patterns: Patterns,
+        file_glob_patterns: Patterns
+    ) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+        context.logger = ctx.logger
+        context.allocator = ctx.allocator
 
-    for &unknown_target in targets {
-        switch target in unknown_target {
-            case string:
-                if os2.is_dir(target) {
-                    log.debugf("Found directory: %q", target)
-                    walker := os2.walker_create(target)
-                    defer os2.walker_destroy(&walker)
+        sanitized_targets := make([dynamic]Hasher, 0, len(targets), ctx.allocator) or_return
+        defer delete(sanitized_targets)
 
-                    log.debugf("[START] Walking ...")
-                    walking_failed := true
-                    defer if walking_failed do log.errorf("[FAIL] Walking ...")
+        for &unknown_target in targets {
+            switch target in unknown_target {
+                case string:
+                    if os2.is_dir(target) {
+                        log.debugf("Found directory: %q", target)
+                        walker := os2.walker_create(target)
+                        defer os2.walker_destroy(&walker)
 
-                    for info in os2.walker_walk(&walker) {
-                        _ = os2.walker_error(&walker) or_continue
+                        log.debugf("[START] Walking ...")
+                        walking_failed := true
+                        defer if walking_failed do log.errorf("[FAIL] Walking ...")
 
-                        if info.type == .Directory {
-                            rel_path := info.fullpath
-                            matched := false
-                            match_target := filepath.base(rel_path)
-                            for &pattern in dir_glob_patterns {
+                        for info in os2.walker_walk(&walker) {
+                            _ = os2.walker_error(&walker) or_continue
+
+                            if info.type == .Directory {
+                                rel_path := info.fullpath
+                                matched := false
+                                match_target := filepath.base(rel_path)
+                                for &pattern in dir_glob_patterns.include {
+                                    glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                    if glob_match_err != nil do glob_match = false
+                                    if glob_match {
+                                        matched = true
+                                        break
+                                    }
+                                }
+                                if !matched && len(dir_glob_patterns.include) > 0 {
+                                    log.debugf("Skipping %q ...", rel_path)
+                                    os2.walker_skip_dir(&walker)
+                                    continue
+                                } else if len(dir_glob_patterns.exclude) > 0 {
+                                    for &pattern in dir_glob_patterns.exclude {
+                                        glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                        if glob_match_err != nil do glob_match = false
+                                        if glob_match {
+                                            matched = true
+                                            break
+                                        }
+                                    }
+                                    if matched {
+                                        log.debugf("Skipping %q (excluded) ...", rel_path)
+                                        os2.walker_skip_dir(&walker)
+                                        continue
+                                    }
+                                }
+                            } else if info.type == .Regular {
+                                rel_path := info.fullpath
+                                matched := false
+                                match_target := filepath.base(rel_path)
+                                for &pattern in file_glob_patterns.include {
+                                    glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                    if glob_match_err != nil do glob_match = false
+                                    if glob_match {
+                                        matched = true
+                                        break
+                                    }
+                                }
+                                if !matched && len(file_glob_patterns.include) > 0 {
+                                    log.debugf("Skipping %q ...", rel_path)
+                                    continue
+                                } else if len(file_glob_patterns.exclude) > 0 {
+                                    for &pattern in file_glob_patterns.exclude {
+                                        glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                        if glob_match_err != nil do glob_match = false
+                                        if glob_match {
+                                            matched = true
+                                            break
+                                        }
+                                    }
+                                    if matched {
+                                        log.debugf("Skipping %q (excluded) ...", rel_path)
+                                        continue
+                                    }
+                                }
+                                managed_fullpath := _manage_mem(ctx, info.fullpath) or_return
+                                managed_fullpath_ptr := _manage_mem(ctx, &managed_fullpath) or_return
+                                append(&sanitized_targets, Hasher{
+                                    procedure=proc(client_data: rawptr) -> u64 {
+                                        path_ptr := transmute(^string)client_data
+                                        path := path_ptr^
+                                        if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                                        stat, stat_err := os2.stat(path, context.allocator)
+                                        defer os2.file_info_delete(stat, context.allocator)
+                                        if stat_err != nil do return empty_hasher_procedure(client_data)
+                                        mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+                                        mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+                                        return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+                                            hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+                                    },
+                                    client_data=managed_fullpath_ptr
+                                }) or_return
+                            }
+                        }
+
+                        walking_failed = false
+                        log.debugf("[DONE] Walking.")
+                    } else {
+                        log.debugf("Found file: %q", target)
+                        rel_path := target
+                        matched := false
+                        match_target := filepath.base(rel_path)
+                        for &pattern in file_glob_patterns.include {
+                            glob_match, glob_match_err := filepath.match(pattern, match_target)
+                            if glob_match_err != nil do glob_match = false
+                            if glob_match {
+                                matched = true
+                                break
+                            }
+                        }
+                        if !matched && len(file_glob_patterns.include) > 0 {
+                            log.debugf("Skipping %q ...", rel_path)
+                            continue
+                        } else if len(file_glob_patterns.exclude) > 0 {
+                            for &pattern in file_glob_patterns.exclude {
                                 glob_match, glob_match_err := filepath.match(pattern, match_target)
                                 if glob_match_err != nil do glob_match = false
                                 if glob_match {
@@ -876,16 +1010,176 @@ files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(str
                                     break
                                 }
                             }
-                            log.debugf("Skipping: %t, Relative path: %q", !matched, rel_path)
-                            if !matched && len(dir_glob_patterns) > 0 {
-                                os2.walker_skip_dir(&walker)
+                            if matched {
+                                log.debugf("Skipping %q (excluded) ...", rel_path)
                                 continue
                             }
-                        } else if info.type == .Regular {
-                            rel_path := info.fullpath
-                            matched := false
-                            match_target := filepath.base(rel_path)
-                            for &pattern in file_glob_patterns {
+                        }
+                        managed_target := _manage_mem(ctx, target) or_return
+                        managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
+                        append(&sanitized_targets, Hasher{
+                            procedure=proc(client_data: rawptr) -> u64 {
+                                path_ptr := transmute(^string)client_data
+                                path := path_ptr^
+                                if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                                stat, stat_err := os2.stat(path, context.allocator)
+                                defer os2.file_info_delete(stat, context.allocator)
+                                if stat_err != nil do return empty_hasher_procedure(client_data)
+                                mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+                                mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+                                return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+                            },
+                            client_data=managed_target_ptr
+                        }) or_return
+                    }
+                case Hasher:
+                    append(&sanitized_targets, target) or_return
+            }
+        }
+
+        log.info("[DONE] Creating fingerprint targets from file targets.")
+        when VERBOSE do log.debug(sanitized_targets[:])
+        
+        return fingerprint(ctx, ..sanitized_targets[:])
+    }
+
+    _multi_thread_impl :: proc(
+        ctx: ^Build_Context, 
+        targets: []Fingerprint_Target(string),
+        dir_glob_patterns: Patterns,
+        file_glob_patterns: Patterns,
+        thread_count: int
+    ) -> (output: Hasher, err: Allocator_Error) #optional_allocator_error {
+        _Basic_Thread_Safe :: struct($U: typeid) {
+            data: ^U,
+            mutex: sync.Mutex
+        }
+
+        _Level_0_Task_Data :: struct {
+            target: Fingerprint_Target(string),
+            sanitized_targets: ^thread_safe_array.Thread_Safe_Dynamic_Array(Hasher),
+            dir_glob_patterns: Patterns,
+            file_glob_patterns: Patterns,
+            ctx: ^_Basic_Thread_Safe(Build_Context)
+        }
+        _level_0_task : thread.Task_Proc : proc(task: thread.Task) {
+            data := transmute(^_Level_0_Task_Data)task.data
+            switch &target in data.target {
+                case string:
+                    if os2.is_dir(target) {
+                        walker := os2.walker_create(target)
+                        defer os2.walker_destroy(&walker)
+
+                        for info in os2.walker_walk(&walker) {
+                            _ = os2.walker_error(&walker) or_continue
+
+                            #partial switch info.type {
+                                case .Directory:
+                                    rel_path := info.fullpath
+                                    matched := false
+                                    match_target := filepath.base(rel_path)
+                                    for pattern in data.dir_glob_patterns.include {
+                                        glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                        if glob_match_err != nil do glob_match = false
+                                        if glob_match {
+                                            matched = true
+                                            break
+                                        }
+                                    }
+                                    if !matched && len(data.dir_glob_patterns.include) > 0 {
+                                        os2.walker_skip_dir(&walker)
+                                        continue
+                                    } else if len(data.dir_glob_patterns.exclude) > 0 {
+                                        for pattern in data.dir_glob_patterns.exclude {
+                                            glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                            if glob_match_err != nil do glob_match = false
+                                            if glob_match {
+                                                matched = true
+                                                break
+                                            }
+                                        }
+                                        if matched {
+                                            os2.walker_skip_dir(&walker)
+                                            continue
+                                        }
+                                    }
+                                case .Regular:
+                                    rel_path := info.fullpath
+                                    matched := false
+                                    match_target := filepath.base(rel_path)
+                                    for pattern in data.file_glob_patterns.include {
+                                        glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                        if glob_match_err != nil do glob_match = false
+                                        if glob_match {
+                                            matched = true
+                                            break
+                                        }
+                                    }
+                                    if !matched && len(data.file_glob_patterns.include) > 0 {
+                                        continue
+                                    } else if len(data.file_glob_patterns.exclude) > 0 {
+                                        for pattern in data.file_glob_patterns.exclude {
+                                            glob_match, glob_match_err := filepath.match(pattern, match_target)
+                                            if glob_match_err != nil do glob_match = false
+                                            if glob_match {
+                                                matched = true
+                                                break
+                                            }
+                                        }
+                                        if matched {
+                                            continue
+                                        }
+                                    }
+                                    sync.mutex_lock(&data.ctx.mutex)
+                                    managed_target := _manage_mem(data.ctx.data, info.fullpath)
+                                    managed_target_ptr := _manage_mem(data.ctx.data, &managed_target)
+                                    sync.mutex_unlock(&data.ctx.mutex)
+                                    thread_safe_array.read_write_lock(data.sanitized_targets)
+                                    append(data.sanitized_targets.buffer, Hasher{
+                                        procedure=proc(client_data: rawptr) -> u64 {
+                                            path_ptr := transmute(^string)client_data
+                                            path := path_ptr^
+                                            if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                                            stat, stat_err := os2.stat(path, context.allocator)
+                                            defer os2.file_info_delete(stat, context.allocator)
+                                            if stat_err != nil do return empty_hasher_procedure(client_data)
+                                            mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+                                            mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+                                            return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+                                                hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+                                        },
+                                        client_data=managed_target_ptr
+                                    })
+                                    thread_safe_array.read_write_unlock(data.sanitized_targets)
+                            }
+                        }
+                    } else {
+                        rel_path := target
+                        matched := false
+                        match_target := filepath.base(rel_path)
+                        for pattern in data.file_glob_patterns.include {
+                            glob_match, glob_match_err := filepath.match(pattern, match_target)
+                            if glob_match_err != nil do glob_match = false
+                            if glob_match {
+                                matched = true
+                                break
+                            }
+                        }
+                        if !matched && len(data.file_glob_patterns.include) > 0 {
+                            return
+                        } else if len(data.file_glob_patterns.exclude) > 0 {
+                            for &pattern in data.file_glob_patterns.exclude {
                                 glob_match, glob_match_err := filepath.match(pattern, match_target)
                                 if glob_match_err != nil do glob_match = false
                                 if glob_match {
@@ -893,70 +1187,94 @@ files_fingerprint :: proc(ctx: ^Build_Context, targets: ..Fingerprint_Target(str
                                     break
                                 }
                             }
-                            log.debugf("Skipping: %t, Relative path: %q", !matched, rel_path)
-                            if !matched && len(file_glob_patterns) > 0 {
-                                continue
+                            if matched {
+                                return
                             }
-
-                            managed_fullpath := _manage_mem(ctx, info.fullpath) or_return
-                            managed_fullpath_ptr := _manage_mem(ctx, &managed_fullpath) or_return
-                            append(&sanitized_targets, Hasher{
-                                procedure=proc(client_data: rawptr) -> u64 {
-                                    path_ptr := transmute(^string)client_data
-                                    path := path_ptr^
-                                    if !os2.exists(path) do return empty_hasher_procedure(client_data)
-                                    b, b_err := os2.read_entire_file(path, context.allocator)
-                                    defer delete(b)
-                                    if b_err != nil do return empty_hasher_procedure(client_data)
-                                    return hash_algo.murmur64a(b)
-                                },
-                                client_data=managed_fullpath_ptr
-                            }) or_return
                         }
+                        sync.mutex_lock(&data.ctx.mutex)
+                        managed_target := _manage_mem(data.ctx.data, target)
+                        managed_target_ptr := _manage_mem(data.ctx.data, &managed_target)
+                        sync.mutex_unlock(&data.ctx.mutex)
+                        thread_safe_array.read_write_lock(data.sanitized_targets)
+                        append(data.sanitized_targets.buffer, Hasher{
+                            procedure=proc(client_data: rawptr) -> u64 {
+                                path_ptr := transmute(^string)client_data
+                                path := path_ptr^
+                                if !os2.exists(path) do return empty_hasher_procedure(client_data)
+                                stat, stat_err := os2.stat(path, context.allocator)
+                                defer os2.file_info_delete(stat, context.allocator)
+                                if stat_err != nil do return empty_hasher_procedure(client_data)
+                                mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+                                mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+                                return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+                                    hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+                            },
+                            client_data=managed_target_ptr
+                        })
+                        thread_safe_array.read_write_unlock(data.sanitized_targets)
                     }
+                case Hasher:
+                    thread_safe_array.read_write_lock(data.sanitized_targets)
+                    append(data.sanitized_targets.buffer, target)
+                    thread_safe_array.read_write_unlock(data.sanitized_targets)
+            }
+        }
 
-                    walking_failed = false
-                    log.debugf("[DONE] Walking.")
-                } else {
-                    log.debugf("Found file: %q", target)
-                    rel_path := target
-                    matched := false
-                    match_target := filepath.base(rel_path)
-                    for &pattern in file_glob_patterns {
-                        glob_match, glob_match_err := filepath.match(pattern, match_target)
-                        if glob_match_err != nil do glob_match = false
-                        if glob_match {
-                            matched = true
-                            break
-                        }
-                    }
-                    log.debugf("Skipping: %t, Relative path: %q", !matched, rel_path)
-                    if !matched && len(file_glob_patterns) > 0 {
-                        continue
-                    }
+        context.logger = ctx.logger
+        context.allocator = ctx.allocator
 
-                    managed_target := _manage_mem(ctx, target) or_return
-                    managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
-                    append(&sanitized_targets, Hasher{
-                        procedure=proc(client_data: rawptr) -> u64 {
-                            path_ptr := transmute(^string)client_data
-                            path := path_ptr^
-                            if !os2.exists(path) do return empty_hasher_procedure(client_data)
-                            b, b_err := os2.read_entire_file(path, context.allocator)
-                            if b_err != nil do return empty_hasher_procedure(client_data)
-                            return hash_algo.murmur64a(b)
-                        },
-                        client_data=managed_target_ptr
-                    }) or_return
-                }
-            case Hasher:
-                append(&sanitized_targets, target) or_return
+        task_data := make([]_Level_0_Task_Data, len(targets))
+        defer delete(task_data)
+
+        tsa: thread_safe_allocator.Thread_Safe_Allocator
+        thread_safe_allocator.init(&tsa, context.allocator)
+        context.allocator = tsa
+
+        // Made under a thread safe allocator, meaning all associated allocations should be thread safe.
+        sanitized_targets := make([dynamic]Hasher, 0, len(targets)) or_return
+        defer delete(sanitized_targets)
+
+        // Thread safe regarding allocations and access to the overall array.
+        ts_santized_targets: thread_safe_array.Thread_Safe_Dynamic_Array(Hasher)
+        thread_safe_array.init_dyn_arr(&ts_santized_targets, &sanitized_targets)
+
+        ts_ctx := _Basic_Thread_Safe(Build_Context) {
+            data=ctx
+        }
+
+        pool: thread.Pool
+        thread.pool_init(&pool, context.allocator, thread_count)
+
+        for &target, i in targets {
+            task_data[i].target = target
+            task_data[i].ctx = &ts_ctx
+            task_data[i].dir_glob_patterns = dir_glob_patterns
+            task_data[i].file_glob_patterns = file_glob_patterns
+            task_data[i].sanitized_targets = &ts_santized_targets
+            thread.pool_add_task(&pool, context.allocator, _level_0_task, &task_data[i], user_index=i)
+        }
+
+        thread.pool_start(&pool)
+        thread.pool_finish(&pool)
+        thread.pool_shutdown(&pool)
+        thread.pool_destroy(&pool)
+
+        return fingerprint(ctx, ..sanitized_targets[:])
+    }
+
+    when !thread.IS_SUPPORTED {
+        return _single_thread_impl(ctx, targets, dir_glob_patterns, file_glob_patterns)
+    } else {
+        thread_count := get_requested_thread_count()
+        if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
+            return _multi_thread_impl(ctx, targets, dir_glob_patterns, file_glob_patterns, thread_count)
+        } else {
+            return _single_thread_impl(ctx, targets, dir_glob_patterns, file_glob_patterns)   
         }
     }
-    
-    failed = false
-    log.info("[DONE] Creating fingerprint targets from file targets.")
-    if ctx.verbose_debug do log.debug(sanitized_targets[:])
-
-    return fingerprint(ctx, ..sanitized_targets[:])
 }

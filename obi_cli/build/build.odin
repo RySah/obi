@@ -7,24 +7,37 @@ import subprocess "../../subprocess"
 
 build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
     when ODIN_DEBUG {
-        track: mem.Tracking_Allocator
+        track: obi.Performance_Tracker
 
-        mem.tracking_allocator_init(&track, context.allocator)
-        context.allocator = mem.tracking_allocator(&track)
-    
+        obi.performance_tracker_init(&track, context.allocator)
+        context.allocator = obi.performance_tracker_allocator(&track)
+
+        obi.performance_tracker_start(&track)
         defer {
-            if len(track.allocation_map) > 0 {
-                fmt.eprintf("=== %v allocations not freed (BUILD) ===\n", len(track.allocation_map))
-                for _, entry in track.allocation_map {
-                    fmt.eprintf("- %v bytes @ %v  %v\n", entry.size, entry.location, entry.memory)
-                }
-            }
-            mem.tracking_allocator_destroy(&track)
+            obi.performance_tracker_end(&track)
+            obi.performance_tracker_eprint(&track, memory_slice_capacity=nil)
+            obi.performance_tracker_destroy(&track)
         }
+
+        // track: mem.Tracking_Allocator
+
+
+        // mem.tracking_allocator_init(&track, context.allocator)
+        // context.allocator = mem.tracking_allocator(&track)
+    
+        // defer {
+        //     if len(track.allocation_map) > 0 {
+        //         fmt.eprintf("=== %v allocations not freed (BUILD) ===\n", len(track.allocation_map))
+        //         for _, entry in track.allocation_map {
+        //             fmt.eprintf("- %v bytes @ %v  %v\n", entry.size, entry.location, entry.memory)
+                    
+        //         }
+        //     }
+        //     mem.tracking_allocator_destroy(&track)
+        // }
     }
 
     ctx = obi.create_build_context() or_return
-    ctx.verbose_debug = true    
     ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
     defer obi.destroy_build_logger(&ctx, ctx.logger)
 
@@ -36,7 +49,7 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
             extra_flags={ "libs" }
         }
         make_step := obi.to_step(&ctx, &make_cmd) or_return
-        make_step.name = "making args-3.3.0"
+        make_step.name = "build args-3.3.0"
 
         api_import_info := obi.c_import(
             &ctx, 
@@ -54,11 +67,23 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
             }
         ) or_return
         api_import_step := obi.to_step(&ctx, api_import_info) or_return
-        api_import_step.name = "importing api-3.3.0 api"
+        api_import_step.name = "import args-3.3.0 api"
 
-        obi.add_step(&ctx, 
+        libargs_step := obi.join_steps(&ctx,
             make_step,
             api_import_step
+        ) or_return
+
+        planned_libargs_step := obi.plan_step(&ctx,
+            obi.files_fingerprint(&ctx, "third_party/args-3.3.0",
+                dir_glob_patterns={ include={ "*" }, exclude={} },
+                file_glob_patterns={ include={ "*" }, exclude={} }
+            ) or_return,
+            libargs_step
+        ) or_return
+
+        obi.add_step(&ctx, 
+            planned_libargs_step.? or_else obi.Empty_Step
         ) or_return
     }
     // ---------------------------
@@ -74,7 +99,10 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
         build_step.name = "build obi_cli"
 
         planned_build_step := obi.plan_step(&ctx,
-            obi.files_fingerprint(&ctx, ".", "third_party", file_glob_patterns={ "*.odin", "*.sjson" }) or_return,
+            obi.files_fingerprint(&ctx, ".", "third_party", 
+                dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
+                file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
+            ) or_return,
             build_step
         ) or_return
 
