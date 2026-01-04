@@ -238,7 +238,6 @@ Build_Context :: struct {
     // Data used internally
     _internal: struct {
         step_collection: [dynamic]Step,
-        //thread_count: int
         using user_args_options: _User_Args_Options
     }
 }
@@ -401,9 +400,8 @@ create_build_context :: proc(
     ctx.allocator = allocator
     ctx.logger = logger
 
-    user_opts: _User_Args_Options
     user_opts_parsing_style := flags.Parsing_Style.Unix
-    user_opts_parse_err := flags.parse(&user_opts, user_args, user_opts_parsing_style, allocator=ctx.allocator)
+    user_opts_parse_err := flags.parse(&ctx._internal.user_args_options, user_args, user_opts_parsing_style, allocator=ctx.allocator)
     if user_opts_parse_err != nil {
         if is_main {
             program := os.args[0]
