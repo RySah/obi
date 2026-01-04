@@ -8,13 +8,14 @@ File_Create :: struct {
     no_truncate: bool
 }
 
-file_create_to_step :: proc(ctx: ^Build_Context, fc: ^File_Create, caller_location := #caller_location) -> (step: Step, err: Error) {
+file_create_to_step :: proc(ctx: ^Build_Context, fc: ^File_Create, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
     owned_fc := _manage_mem(ctx, fc) or_return
+    step = create_step(ctx) or_return
     step.client_data = owned_fc
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         fc := transmute(^File_Create)client_data
@@ -30,13 +31,14 @@ MkDir :: struct {
     all: bool
 }
 
-mkdir_to_step :: proc(ctx: ^Build_Context, mkdir: ^MkDir, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
+mkdir_to_step :: proc(ctx: ^Build_Context, mkdir: ^MkDir, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
     owned_mkdir := _manage_mem(ctx, mkdir) or_return
+    step = create_step(ctx) or_return
     step.client_data = owned_mkdir
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         mkdir := transmute(^MkDir)client_data

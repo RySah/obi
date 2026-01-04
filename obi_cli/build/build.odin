@@ -5,7 +5,7 @@ import "core:mem"
 import obi "../.."
 import subprocess "../../subprocess"
 
-build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
+build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
     when ODIN_DEBUG {
         track: obi.Performance_Tracker
 
@@ -18,28 +18,15 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
             obi.performance_tracker_eprint(&track, memory_slice_capacity=nil)
             obi.performance_tracker_destroy(&track)
         }
-
-        // track: mem.Tracking_Allocator
-
-
-        // mem.tracking_allocator_init(&track, context.allocator)
-        // context.allocator = mem.tracking_allocator(&track)
-    
-        // defer {
-        //     if len(track.allocation_map) > 0 {
-        //         fmt.eprintf("=== %v allocations not freed (BUILD) ===\n", len(track.allocation_map))
-        //         for _, entry in track.allocation_map {
-        //             fmt.eprintf("- %v bytes @ %v  %v\n", entry.size, entry.location, entry.memory)
-                    
-        //         }
-        //     }
-        //     mem.tracking_allocator_destroy(&track)
-        // }
     }
 
-    ctx = obi.create_build_context() or_return
+    ctx = obi.create_build_context(user_args, is_main=true) or_return
     ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
     defer obi.destroy_build_logger(&ctx, ctx.logger)
+
+    build_step, run_step: Maybe(obi.Step)
+    build_step = obi.odin_default_build_step(&ctx, planned=true) or_return
+    run_step = obi.odin_default_run_step(&ctx, planned=true) or_return
 
     // --- C IMPORT ARGS 3.3.0 ---
     {

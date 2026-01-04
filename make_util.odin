@@ -166,7 +166,7 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #ca
     return cmd_p, nil
 }
 
-make_to_step :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #caller_location) -> (step: Step, err: Error) {
+make_to_step :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()

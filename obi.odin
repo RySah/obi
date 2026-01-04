@@ -109,7 +109,7 @@ Step :: struct {
     procedure: #type proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error),
     client_data: rawptr,
     success_required: bool,
-    children: [dynamic]Step,
+    children: [dynamic]^Step,
     // Set during `build`    
     build_time_flags: bit_field u8 {
         completed: bool | 1,
@@ -127,9 +127,9 @@ Empty_Step :: Step{
     children=nil
 }
 
-OS_Specific_Step :: [OS_Type]Maybe(Step)
-Arch_Specific_Step :: [Arch_Type]Maybe(Step)
-OS_Arch_Specific_Step :: [OS_Type][Arch_Type]Maybe(Step)
+OS_Specific_Step :: [OS_Type]^Step
+Arch_Specific_Step :: [Arch_Type]^Step
+OS_Arch_Specific_Step :: [OS_Type][Arch_Type]^Step
 
 Hasher :: struct {
     procedure: #type proc(client_data: rawptr) -> u64,
@@ -161,14 +161,14 @@ resolve_os_arch_specific_subprocess :: #force_inline proc(s: ^OS_Arch_Specific_S
     return &s[transmute(OS_Type)ODIN_OS][transmute(Arch_Type)ODIN_ARCH]
 }
 
-resolve_os_specific_step :: #force_inline proc(s: ^OS_Specific_Step) -> ^Maybe(Step) {
-    return &s[transmute(OS_Type)ODIN_OS]
+resolve_os_specific_step :: #force_inline proc(s: ^OS_Specific_Step) -> ^Step {
+    return s[transmute(OS_Type)ODIN_OS]
 }
-resolve_arch_specific_step :: #force_inline proc(s: ^Arch_Specific_Step) -> ^Maybe(Step) {
-    return &s[transmute(Arch_Type)ODIN_ARCH]
+resolve_arch_specific_step :: #force_inline proc(s: ^Arch_Specific_Step) -> ^Step {
+    return s[transmute(Arch_Type)ODIN_ARCH]
 }
-resolve_os_arch_specific_step :: #force_inline proc(s: ^OS_Arch_Specific_Step) -> ^Maybe(Step) {
-    return &s[transmute(OS_Type)ODIN_OS][transmute(Arch_Type)ODIN_ARCH]
+resolve_os_arch_specific_step :: #force_inline proc(s: ^OS_Arch_Specific_Step) -> ^Step {
+    return s[transmute(OS_Type)ODIN_OS][transmute(Arch_Type)ODIN_ARCH]
 }
 
 resolve_os_specific :: proc{resolve_os_specific_step,resolve_os_specific_subprocess}
@@ -237,7 +237,7 @@ Build_Context :: struct {
     },
     // Data used internally
     _internal: struct {
-        step_collection: [dynamic]Step,
+        step_collection: [dynamic]^Step,
         using user_args_options: _User_Args_Options
     }
 }
@@ -444,7 +444,7 @@ create_build_context :: proc(
             return ctx, vs_err
         }
     }
-    ctx._internal.step_collection = make([dynamic]Step, ctx.allocator) or_return
+    ctx._internal.step_collection = make([dynamic]^Step, ctx.allocator) or_return
     return ctx, nil
 }
 
@@ -466,6 +466,7 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     log.debugf("[DONE] Destroying build context file system.")
 
     log.debugf("[START] Destroying build context step collection.")
+    for &step in ctx._internal.step_collection do delete(step.children) or_return
     delete(ctx._internal.step_collection) or_return
     log.debugf("[DONE] Destroying build context step collection.")
 
@@ -477,7 +478,7 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     return nil
 }
 
-run_step :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (success: bool, err: Error) {
+run_step :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #caller_location) -> (success: bool, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -563,13 +564,14 @@ run_subprocess :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, caller_lo
 }
 
 // Clones `cmd` and converts it to a step.
-subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, caller_location := #caller_location) -> (step: Step, err: Error) {
+subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
     owned_cmd := _manage_mem(ctx, cmd, clone_members=true) or_return
+    step = create_step(ctx) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         cmd := transmute(^Sub_Process_Command)client_data
@@ -577,7 +579,7 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, calle
     }
     return step, err
 }
-os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Sub_Process, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -591,7 +593,7 @@ os_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Specific_Su
     }
     return step, nil
 }
-arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -605,7 +607,7 @@ arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Arch_Specifi
     }
     return step, nil
 }
-os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
+os_arch_specific_subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^OS_Arch_Specific_Sub_Process, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -642,7 +644,7 @@ os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Cont
     return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
-run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (err: Error)  {
+run_step_tree :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #caller_location) -> (err: Error)  {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -656,7 +658,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
         context.allocator = ctx.allocator
         context.logger = ctx.logger
 
-        if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
+        if success := run_step(ctx, target_step) or_return; !success && target_step.success_required {
             log.errorf(
                 "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
                 target_step.name,
@@ -669,13 +671,13 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
         stack := make([dynamic]^Step, 0, len(target_step.children))
         defer delete(stack)
 
-        for &s in target_step.children do append(&stack, &s)
+        for &s in target_step.children do append(&stack, s)
 
         for len(stack) > 0 {
             step := stack[len(stack)-1]
             pop_front(&stack)
 
-            if success := run_step(ctx, step^) or_return; !success && step.success_required {
+            if success := run_step(ctx, step) or_return; !success && step.success_required {
                 log.errorf(
                     "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
                     step.name,
@@ -684,7 +686,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
                 )
             } else {
                 for &child in step.children {
-                    append(&stack, &child)
+                    append(&stack, child)
                 }
             }
         }
@@ -706,7 +708,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
         context.logger = ctx.logger
         context.allocator = ctx.allocator
 
-        if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
+        if success := run_step(ctx, target_step) or_return; !success && target_step.success_required {
             log.errorf(
                 "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
                 target_step.name,
@@ -761,7 +763,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
             }
 
             if sync.mutex_guard(&data.ts_build_ctx.mutex) {
-                if success, step_err := run_step(data.ts_build_ctx.data, data.step^); !success && data.step.success_required {
+                if success, step_err := run_step(data.ts_build_ctx.data, data.step); !success && data.step.success_required {
                     log.errorf(
                         "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
                         data.step.name,
@@ -781,7 +783,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
                 child_data.ts_data_storage = data.ts_data_storage
                 child_data.pool = data.pool
                 child_data.dep_step = data.step
-                child_data.step = &child
+                child_data.step = child
                 child_data.ts_build_ctx = data.ts_build_ctx
                 child_data.colour_enabled = data.colour_enabled
                 child_data.logger = data.logger
@@ -796,7 +798,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
             child_data.ts_data_storage = &ts_data_storage
             child_data.pool = &pool
             child_data.dep_step = nil
-            child_data.step = &child
+            child_data.step = child
             child_data.ts_build_ctx = &ts_build_ctx
             child_data.colour_enabled = colour_enabled
             child_data.logger = context.logger
@@ -817,13 +819,13 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
     colour_enabled := .Terminal_Color in context.logger.options
 
     when !thread.IS_SUPPORTED {
-        return _single_thread_impl(ctx, &target_step, colour_enabled)
+        return _single_thread_impl(ctx, target_step, colour_enabled)
     } else {
         thread_count := get_thread_count(ctx)
         if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
-            return _multi_thread_impl(ctx, &target_step, colour_enabled, thread_count)
+            return _multi_thread_impl(ctx, target_step, colour_enabled, thread_count)
         } else {
-            return _single_thread_impl(ctx, &target_step, colour_enabled)   
+            return _single_thread_impl(ctx, target_step, colour_enabled)   
         }
     }
 }
@@ -845,11 +847,11 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
     log.infof("[START] Building ...")
     defer if err != nil do log.errorf("[FAIL] Building.")
 
-    _find_step_target :: proc(target: string, steps: []Step) -> ^Step {
+    _find_step_target :: proc(target: string, steps: []^Step) -> ^Step {
         stack := make([dynamic]^Step, 0, len(steps))
         defer delete(stack)
 
-        for &s in steps do append(&stack, &s)
+        for &s in steps do append(&stack, s)
 
         for len(stack) > 0 {
             step := stack[len(stack)-1]
@@ -860,7 +862,7 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
             }
 
             for &child in step.children {
-                append(&stack, &child)
+                append(&stack, child)
             }
         }
 
@@ -869,7 +871,7 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
 
     target_step := _find_step_target(get_target_step_name(ctx), ctx._internal.step_collection[:])
     
-    run_step_tree(ctx, target_step^)
+    run_step_tree(ctx, target_step)
 
     log.infof("[DONE] Building.")
     return nil
@@ -944,7 +946,7 @@ c_import_info :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location
     ctx: ^Build_Context
 }
 
-c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (step: Step, err: Error) {
+c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -954,6 +956,7 @@ c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_
         info=info,
         ctx=ctx
     }
+    step = create_step(ctx) or_return
     step.client_data = _manage_mem(ctx, &client_data) or_return
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         ciicd := transmute(^_C_Bindgen_Info_Client_Data)client_data
@@ -986,31 +989,54 @@ to_step :: proc{
     cmake_out_of_source_build_to_step
 }
 
-add_step_with_name :: proc(ctx: ^Build_Context, name: string, step: Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
-    step := step
+    step = new(Step, gc.allocator(&ctx.garbage_collector)) or_return
+    step.children = make([dynamic]^Step, ctx.allocator) or_return
+    //append(&ctx._internal.step_collection, step) or_return
+    return step, nil
+}
+create_step_with_name :: proc(ctx: ^Build_Context, name: string, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    step = create_step_without_name(ctx) or_return
     step.name = name
+    return step, nil
+}
+create_step :: proc{create_step_with_name,create_step_without_name}
+
+add_step :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
     append(&ctx._internal.step_collection, step) or_return
     return nil
 }
-add_step_without_name :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+
+emplace_step :: proc(ctx: ^Build_Context, name: string, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
-    return add_step_with_name(ctx, step.name, step)
+    step = create_step_with_name(ctx, name) or_return
+    add_step(ctx, step) or_return
+    return step, nil
 }
-add_step :: proc{add_step_with_name,add_step_without_name}
 
 /*
 Merges steps into a single step.  
 */
-merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
+merge_steps :: proc(ctx: ^Build_Context, steps: ..^Step, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -1018,19 +1044,30 @@ merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #call
 
     owned_steps := _manage_mem(ctx, steps) or_return
     owned_steps_ptr := _manage_mem(ctx, &owned_steps) or_return
+    step = create_step(ctx) or_return
     step.client_data = owned_steps_ptr
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         context.logger = ctx.logger
         context.allocator = ctx.allocator
 
-        steps := (transmute(^[]Step)client_data)^
+        steps := (transmute(^[]^Step)client_data)^
         for &step in steps {
-            run_step_tree(ctx, step)
+            run_step_tree(ctx, step) or_return
         }
 
         return true, nil
     }
     return step, nil
+}
+
+add_child :: proc(parent: ^Step, children: ..^Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    append(&parent.children, ..children) or_return
+    return nil
 }
 
 /*

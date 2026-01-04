@@ -101,7 +101,7 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_loc
     return cmd_p, nil
 }
 
-odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_location := #caller_location) -> (step: Step, err: Error) {
+odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -149,7 +149,7 @@ odin_run_to_subprocess :: proc(ctx: ^Build_Context, r: ^Odin_Run, caller_locatio
     return cmd_p, nil
 }
 
-odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run, caller_location := #caller_location) -> (step: Step, err: Error) {
+odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -157,4 +157,67 @@ odin_run_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Run, caller_location := #
 
     cmd := odin_run_to_subprocess(ctx, b) or_return
     return subprocess_to_step(ctx, cmd)
+}
+
+odin_default_build_step :: proc(
+    ctx: ^Build_Context, 
+    extra_flags: ..string, 
+    planned := false, 
+    caller_location := #caller_location
+) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    cmd := Odin_Build{
+        mode=.Executable,
+        path=Odin_Build_Dir_Path("."),
+        extra_flags=extra_flags
+    }
+    step = to_step(ctx, &cmd) or_return
+
+    if planned {
+        step = plan_step(
+            ctx,
+            files_fingerprint(ctx, ".", "third_party", 
+                dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
+                file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
+            ) or_return,
+            step.?
+        ) or_return
+    }
+
+    return step, nil
+}
+
+odin_default_run_step :: proc(
+    ctx: ^Build_Context, 
+    extra_flags: ..string, 
+    planned := false, 
+    caller_location := #caller_location
+) -> (step: Maybe(Step), err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    cmd := Odin_Run{
+        path=Odin_Build_Dir_Path("."),
+        extra_flags=extra_flags
+    }
+    step = to_step(ctx, &cmd) or_return
+
+    if planned {
+        step = plan_step(
+            ctx,
+            files_fingerprint(ctx, ".", "third_party", 
+                dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
+                file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
+            ) or_return,
+            step.?
+        ) or_return
+    }
+
+    return step, nil
 }
