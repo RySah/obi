@@ -112,7 +112,7 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
     }   
     // ------------------
 
-    obi.build(&ctx) or_return
+    obi.build(&ctx, obi.user_args(), ) or_return
     
     return ctx, nil
 }

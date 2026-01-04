@@ -231,6 +231,10 @@ Build_Context :: struct {
     windows: struct {
         visual_studio_releases: VS_Releases,
         visual_studio_cmake_path: Maybe(string)
+    },
+    // Data used internally
+    _internal: struct {
+        step_collection: [dynamic]Step
     }
 }
 
@@ -422,6 +426,7 @@ create_build_context :: proc(
             return ctx, vs_err
         }
     }
+    ctx._internal.step_collection = make([dynamic]Step, ctx.allocator) or_return
     return ctx, nil
 }
 
@@ -442,9 +447,9 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     cachefs.destroy(&ctx.cache_file_system) or_return
     log.debugf("[DONE] Destroying build context file system.")
 
-    // log.debugf("[START] Destroying build context step collection.")
-    // delete(ctx.steps) or_return
-    // log.debugf("[DONE] Destroying build context step collection.")
+    log.debugf("[START] Destroying build context step collection.")
+    delete(ctx._internal.step_collection) or_return
+    log.debugf("[DONE] Destroying build context step collection.")
 
     log.debugf("[START] Destroying build context garbage collector.")
     gc.destroy(&ctx.garbage_collector)
@@ -619,65 +624,11 @@ os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Cont
     return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
-user_args :: proc() -> []string {
-    return os.args[1:]
-}
-
-/* Use the `Build_Context` to build the respective project.
-*/
-build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_location := #caller_location) -> (err: Error) {
+run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (err: Error)  {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
-
-    context.logger = ctx.logger
-
-    colour_enabled := .Terminal_Color in context.logger.options
-
-    log.infof("[START] Building ...")
-    defer if err != nil do log.errorf("[FAIL] Building.")
-
-    if len(args) == 0 {
-        log.warnf("[DONE] Building. Target has not been specified, skipping build process.")
-        return nil
-    }
-
-    target := args[0]
-
-    // for &c in steps {
-    //     if success := run_step(ctx, c) or_return; !success && c.success_required {
-    //         log.errorf(
-    //             "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
-    //             colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-    //             colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-    //         )
-    //         break // No more steps will be ran
-    //     }
-    // }
-
-    _find_step_target :: proc(target: string, steps: []Step) -> ^Step {
-        stack := make([dynamic]^Step, 0, len(steps))
-        defer delete(stack)
-
-        for &s in steps do append(&stack, &s)
-
-        for len(stack) > 0 {
-            step := stack[len(stack)-1]
-            pop_front(&stack)
-
-            if step.name == target {
-                return step
-            }
-
-            for &child in step.children {
-                append(&stack, &child)
-            }
-        }
-
-        return nil
-    }
-
 
     _single_thread_impl :: proc(
         ctx: ^Build_Context,
@@ -689,7 +640,8 @@ build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_locatio
 
         if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
             log.errorf(
-                "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+                target_step.name,
                 colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
                 colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
             )
@@ -707,7 +659,8 @@ build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_locatio
 
             if success := run_step(ctx, step^) or_return; !success && step.success_required {
                 log.errorf(
-                    "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                    "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+                    step.name,
                     colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
                     colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
                 )
@@ -737,7 +690,8 @@ build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_locatio
 
         if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
             log.errorf(
-                "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+                target_step.name,
                 colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
                 colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
             )
@@ -841,18 +795,70 @@ build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_locatio
         return nil
     }
 
-    target_step := _find_step_target(target, steps)
+    target_step := step
+    colour_enabled := .Terminal_Color in context.logger.options
 
     when !thread.IS_SUPPORTED {
-        return _single_thread_impl(ctx, target_step, colour_enabled)
+        return _single_thread_impl(ctx, &target_step, colour_enabled)
     } else {
         thread_count := get_requested_thread_count()
         if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
-            return _multi_thread_impl(ctx, target_step, colour_enabled, thread_count)
+            return _multi_thread_impl(ctx, &target_step, colour_enabled, thread_count)
         } else {
-            return _single_thread_impl(ctx, target_step, colour_enabled)   
+            return _single_thread_impl(ctx, &target_step, colour_enabled)   
         }
     }
+}
+
+user_args :: proc() -> []string {
+    return os.args[1:]
+}
+
+/* Use the `Build_Context` to build the respective project.
+*/
+build :: proc(ctx: ^Build_Context, args: []string, caller_location := #caller_location) -> (err: Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
+
+    context.logger = ctx.logger
+
+    log.infof("[START] Building ...")
+    defer if err != nil do log.errorf("[FAIL] Building.")
+
+    if len(args) == 0 {
+        log.warnf("[DONE] Building. Target has not been specified, skipping build process.")
+        return nil
+    }
+
+    target := args[0]
+
+    _find_step_target :: proc(target: string, steps: []Step) -> ^Step {
+        stack := make([dynamic]^Step, 0, len(steps))
+        defer delete(stack)
+
+        for &s in steps do append(&stack, &s)
+
+        for len(stack) > 0 {
+            step := stack[len(stack)-1]
+            pop_front(&stack)
+
+            if step.name == target {
+                return step
+            }
+
+            for &child in step.children {
+                append(&stack, &child)
+            }
+        }
+
+        return nil
+    }
+
+    target_step := _find_step_target(target, ctx._internal.step_collection[:])
+    
+    run_step_tree(ctx, target_step^)
 
     log.infof("[DONE] Building.")
     return nil
@@ -969,16 +975,30 @@ to_step :: proc{
     cmake_out_of_source_build_to_step
 }
 
-// add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (err: Allocator_Error) {
-//     _start_trace()
-//     _trace(caller_location)
-//     _trace()
-//     defer if err == nil do _backtrace()
+add_step_with_name :: proc(ctx: ^Build_Context, name: string, step: Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
 
-//     append(&ctx.steps, ..steps) or_return
-//     return nil
-// }
+    step := step
+    step.name = name
+    append(&ctx._internal.step_collection, step) or_return
+    return nil
+}
+add_step_without_name :: proc(ctx: ^Build_Context, step: Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+    _start_trace()
+    _trace(caller_location)
+    _trace()
+    defer if err == nil do _backtrace()
 
+    return add_step_with_name(ctx, step.name, step)
+}
+add_step :: proc{add_step_with_name,add_step_without_name}
+
+/*
+Merges steps into a single step.  
+*/
 merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
@@ -990,20 +1010,11 @@ merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #call
     step.client_data = owned_steps_ptr
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         context.logger = ctx.logger
-
-        colour_enabled := .Terminal_Color in context.logger.options
+        context.allocator = ctx.allocator
 
         steps := (transmute(^[]Step)client_data)^
-        for &c in steps {
-            if success := run_step(ctx, c) or_return; !success && c.success_required {
-                log.errorf(
-                    "The step %q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-                    c.name,
-                    colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-                    colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-                )
-                break // No more steps will be ran
-            }
+        for &step in steps {
+            run_step_tree(ctx, step)
         }
 
         return true, nil
@@ -1011,7 +1022,9 @@ merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #call
     return step, nil
 }
 
-// Using the `hasher`, it will determine whether the step belongs in the overall build.
+/*
+Using the `hasher`, it will determine whether the step belongs in the overall build.
+*/
 plan_step :: proc(ctx: ^Build_Context, fingerprint: Hasher, s: Step, caller_location := #caller_location) -> (step: Maybe(Step), err: Error) {
     _start_trace()
     _trace(caller_location)
