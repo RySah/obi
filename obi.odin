@@ -1,7 +1,7 @@
 package obi
 
 VERBOSE      :: #config(VERBOSE, false)
-THREAD_COUNT :: #config(J, 0)
+//THREAD_COUNT :: #config(J, 0)
 
 import "core:fmt"
 import "core:os/os2"
@@ -18,6 +18,7 @@ import "core:time"
 import "core:thread"
 import "core:sync"
 import "core:os"
+import "core:flags"
 import thread_safe_allocator "thread_safe/allocator"
 import thread_safe_array "thread_safe/array"
 import thread_safe_logger "thread_safe/logger"
@@ -51,7 +52,13 @@ import gc "garbage_collector"
 GC_Error :: gc.Error
 Garbage_Collector :: gc.Garbage_Collector
 
+General_Error :: enum u8 {
+    None,
+    Failed_To_Parse_User_Args
+}
+
 Error :: union #shared_nil {
+    General_Error,
     C_Bindgen_Parser_Error,
     Cache_File_System_Error,
     Sub_Process_Error,
@@ -175,6 +182,12 @@ Global_Build_Context :: struct {
 
 global_ctx: Global_Build_Context
 
+@private _User_Args_Options :: struct {
+    job_count: int `args:"name=j" usage:"Number of parallel jobs / threads"`,
+    target_step: string `args:"pos=0,required" usage:"Step to run"`,
+    overflow: [dynamic]string `usage:"Extra arguments"`,
+}
+
 @(private) _start_trace :: #force_inline proc() { lt_start_trace(&global_ctx.error_loc_trace) }
 @(private) _backtrace :: #force_inline proc() { lt_backtrace(&global_ctx.error_loc_trace) }
 @(private) _trace :: #force_inline proc(caller_location := #caller_location) { lt_trace_location(&global_ctx.error_loc_trace, caller_location) }
@@ -190,16 +203,6 @@ init :: proc(allocator := context.allocator) -> Error {
 deinit :: proc() -> Error {
     lt_destroy_location_trace(&global_ctx.error_loc_trace)
     return nil
-}
-
-get_requested_thread_count :: proc() -> int {
-    @static value: int
-    @static init_fl: bool
-    if !init_fl {
-        value = THREAD_COUNT==0 ? os.processor_core_count() : min(THREAD_COUNT, os.processor_core_count())
-        init_fl = true
-    }
-    return value
 }
 
 Build_Context :: struct {
@@ -234,9 +237,14 @@ Build_Context :: struct {
     },
     // Data used internally
     _internal: struct {
-        step_collection: [dynamic]Step
+        step_collection: [dynamic]Step,
+        //thread_count: int
+        using user_args_options: _User_Args_Options
     }
 }
+
+get_thread_count :: proc(ctx: ^Build_Context) -> int { return ctx._internal.job_count }
+set_thread_count :: proc(ctx: ^Build_Context, v: int) { ctx._internal.job_count = v }
 
 default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
     data := transmute(^State_Hasher_Client_Data)client_data
@@ -257,19 +265,6 @@ default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
             if exclude, ok := maybe_exclude.?; ok {
                 if strings.compare(full_path, exclude) == 0 do continue
             }
-
-            // stat, stat_err := os2.stat(full_path, context.allocator)
-            // defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
-            // if stat_err != nil do return empty_hasher_procedure(client_data)
-            // mod_yr, mod_month, mod_day := time.date(stat.modification_time)
-            // mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-            // result |= hash_algo.murmur64a(transmute([]byte)full_path) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
-            //     hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
 
             result |= hash_algo.murmur64a(transmute([]u8)full_path)
             content, content_err := os2.read_entire_file(full_path, context.allocator)
@@ -390,6 +385,8 @@ destroy_build_logger :: #force_inline proc(ctx: ^Build_Context, logger: log.Logg
 /* Creates a `Build_Context`, essential for any builds.
 */
 create_build_context :: proc(
+    user_args: []string,
+    is_main := false,
     allocator := context.allocator, 
     logger := context.logger,
     cache_file_system_path := DEFAULT_CACHE_FILE_SYSTEM_PATH, 
@@ -403,6 +400,27 @@ create_build_context :: proc(
 
     ctx.allocator = allocator
     ctx.logger = logger
+
+    user_opts: _User_Args_Options
+    user_opts_parsing_style := flags.Parsing_Style.Unix
+    user_opts_parse_err := flags.parse(&user_opts, user_args, user_opts_parsing_style, allocator=ctx.allocator)
+    if user_opts_parse_err != nil {
+        if is_main {
+            program := os.args[0]
+		    stderr := os.stream_from_handle(os.stderr)
+            
+		    if len(user_args) == 0 {
+		    	// No arguments entered, and there was an error; show the usage,
+		    	// specifically on STDERR.
+		    	flags.write_usage(stderr, _User_Args_Options, program, user_opts_parsing_style)
+		    	fmt.wprintln(stderr)
+		    }
+
+		    flags.print_errors(_User_Args_Options, user_opts_parse_err, program, user_opts_parsing_style)
+        }
+
+        return ctx, General_Error.Failed_To_Parse_User_Args
+	}
 
     gc.init_growing(&ctx.garbage_collector) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
@@ -816,7 +834,7 @@ user_args :: proc() -> []string {
 
 /* Use the `Build_Context` to build the respective project.
 */
-build :: proc(ctx: ^Build_Context, args: []string, caller_location := #caller_location) -> (err: Error) {
+build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()

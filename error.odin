@@ -5,6 +5,7 @@ import "core:os/os2"
 import "core:io"
 import "core:fmt"
 import "core:encoding/json"
+import "core:flags"
 
 import "base:runtime"
 
@@ -16,8 +17,10 @@ import lc "bindgen/c/clang_util/libclang"
 // Takes an error and provides more context on which PACKAGE it may have come from.
 sb_expand_error :: proc(err: Error, sb: ^strings.Builder) {
     switch underlying_err1 in err {
+        case General_Error:
+            fmt.sbprint(sb, "obi.General_Error -> ", underlying_err1)
         case C_Bindgen_Parser_Error:
-            fmt.sbprint(sb, "C_Bindgen_Parser_Error -> ")
+            fmt.sbprint(sb, "bindgen_c.Parser_Error -> ")
             switch underlying_err2 in underlying_err1 {
                 case cu.Error:
                     fmt.sbprint(sb, "clang_util.Error -> ")
@@ -25,16 +28,21 @@ sb_expand_error :: proc(err: Error, sb: ^strings.Builder) {
                         case lc.Error_Code:
                             fmt.sbprint(sb, "clang_util.Error -> ", underlying_err3, sep="")
                         case Allocator_Error:
-                            fmt.sbprint(sb, "Allocator_Error -> ", underlying_err3, sep="")
+                            sb_expand_error(underlying_err3, sb)
                     }
                 case Allocator_Error:
-                    fmt.sbprint(sb, "Allocator_Error -> ", underlying_err2, sep="")
+                    sb_expand_error(underlying_err2, sb)
             }
         case Cache_File_System_Error:
-            fmt.sbprint(sb, "Cache_File_System_Error -> ")
-            sb_expand_error(underlying_err1, sb)
-        case Sub_Process_Error:
-            fmt.sbprint(sb, "Sub_Process_Error -> ")
+            fmt.sbprint(sb, "cachefs.Error -> ")
+            switch underlying_err2 in underlying_err1 {
+                case os2.Error:
+                    sb_expand_error(underlying_err2, sb)
+                case Allocator_Error:
+                    sb_expand_error(underlying_err2, sb)
+            }
+        case Sub_Process_Error: // Same as `os2.Error`
+            fmt.sbprint(sb, "subprocess.Error/os2.Error -> ")
             switch underlying_err2 in underlying_err1 {
                 case os2.General_Error:
                     fmt.sbprint(sb, "os2.General_Error -> ", underlying_err2, sep="")
@@ -46,13 +54,13 @@ sb_expand_error :: proc(err: Error, sb: ^strings.Builder) {
                     fmt.sbprint(sb, "os2.Platform_Error -> ", underlying_err2, sep="")
             }
         case Allocator_Error:
-            fmt.sbprint(sb, "Allocator_Error -> ", underlying_err1, sep="")
+            fmt.sbprint(sb, "runtime.Allocator_Error -> ", underlying_err1, sep="")
         case Make_Error:
             fmt.sbprint(sb, "Make_Error -> ", underlying_err1, sep="")
         case CMake_Error:
             fmt.sbprint(sb, "CMake_Error -> ", underlying_err1, sep="")
         case VS_Error:
-            fmt.sbprint(sb, "VS_Error -> ")
+            fmt.sbprint(sb, "visual_studio.Error -> ")
             switch underlying_err2 in underlying_err1 {
                 case Allocator_Error:
                     sb_expand_error(underlying_err2, sb)
