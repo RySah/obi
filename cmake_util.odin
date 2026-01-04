@@ -98,7 +98,7 @@ cmake_in_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_In_Source_B
     build_stage_step := to_step(ctx, &build_stage_cmd) or_return
     build_stage_step.name = "build-stage"
 
-    return join_steps(ctx, config_stage_step, build_stage_step)
+    return merge_steps(ctx, config_stage_step, build_stage_step)
 }
 
 /*
@@ -161,7 +161,7 @@ cmake_out_of_source_build_to_step :: proc(ctx: ^Build_Context, c: ^CMake_Out_Of_
     build_stage_step := to_step(ctx, &build_stage_cmd) or_return
     build_stage_step.name = "build-stage"
 
-    return join_steps(ctx, mk_build_dir_step, config_stage_step, build_stage_step)
+    return merge_steps(ctx, mk_build_dir_step, config_stage_step, build_stage_step)
 }
 
 CMake_Build :: CMake_Out_Of_Source_Build

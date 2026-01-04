@@ -69,7 +69,7 @@ build :: proc() -> (ctx: obi.Build_Context, err: obi.Error) {
         api_import_step := obi.to_step(&ctx, api_import_info) or_return
         api_import_step.name = "import args-3.3.0 api"
 
-        libargs_step := obi.join_steps(&ctx,
+        libargs_step := obi.merge_steps(&ctx,
             make_step,
             api_import_step
         ) or_return

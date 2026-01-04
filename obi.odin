@@ -17,9 +17,10 @@ import "core:strconv"
 import "core:time"
 import "core:thread"
 import "core:sync"
+import "core:os"
 import thread_safe_allocator "thread_safe/allocator"
 import thread_safe_array "thread_safe/array"
-import "core:os"
+import thread_safe_logger "thread_safe/logger"
 
 import "base:runtime"
 
@@ -61,7 +62,7 @@ Error :: union #shared_nil {
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
-DEFAULT_C_IMPORT_OUTPUT_PATH :: "c_export"
+DEFAULT_C_EXPORT_PATH :: "c_export"
 
 // Same as Odin_OS_Type
 OS_Type :: enum int {
@@ -100,21 +101,29 @@ Step :: struct {
     name: string,
     procedure: #type proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error),
     client_data: rawptr,
-    success_required: bool
+    success_required: bool,
+    children: [dynamic]Step,
+    // Set during `build`    
+    build_time_flags: bit_field u8 {
+        completed: bool | 1,
+        failed: bool    | 1
+    }
 }
 
 empty_step_procedure :: proc(^Build_Context,rawptr) -> (bool, Error) { return true, nil }
 
 Empty_Step :: Step{
-    name="empty",
+    name="",
     procedure=empty_step_procedure,
     client_data=nil,
-    success_required=false
+    success_required=false,
+    children=nil
 }
 
 OS_Specific_Step :: [OS_Type]Maybe(Step)
 Arch_Specific_Step :: [Arch_Type]Maybe(Step)
 OS_Arch_Specific_Step :: [OS_Type][Arch_Type]Maybe(Step)
+
 Hasher :: struct {
     procedure: #type proc(client_data: rawptr) -> u64,
     client_data: rawptr
@@ -204,9 +213,7 @@ Build_Context :: struct {
     cache_file_system: Cache_File_System,
     // Default parent directory for `C_Import_Info` objects.  
     // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_directory` to customize it for that specific object.
-    c_import_output_path: string,
-    // Sequence of steps to run, to complete the build.
-    steps: [dynamic]Step,
+    c_export_path: string,
     // Output handle for all subprocess commands.    
     // **NOTE:** Set to the system stdout (`subprocess.stdout`) by default.
     stdout: ^Sub_Process_File, 
@@ -241,16 +248,24 @@ default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
         _ = os2.walker_error(&walker) or_continue
 
         if info.type == .Regular {
-            rel_path := info.fullpath
+            full_path := info.fullpath
 
             if exclude, ok := maybe_exclude.?; ok {
-                if strings.compare(rel_path, exclude) == 0 do continue
+                if strings.compare(full_path, exclude) == 0 do continue
             }
 
-            result |= hash_algo.murmur64a(transmute([]u8)rel_path)
-            content, content_err := os2.read_entire_file(rel_path, context.allocator)
-            defer if content_err == nil do delete(content)
-            result |= content_err == nil ? hash_algo.murmur64a(transmute([]u8)content) : 0
+            stat, stat_err := os2.stat(full_path, context.allocator)
+            defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
+            if stat_err != nil do return empty_hasher_procedure(client_data)
+            mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+            mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+            result |= hash_algo.murmur64a(transmute([]byte)full_path) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+                hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
         }
     }
 
@@ -275,12 +290,6 @@ Default_State_Hasher :: Hasher {
     procedure=default_state_hasher_procedure,
     client_data=nil
 }
-
-// @(private)
-// _C_Bindgen_Info_Client_Data :: struct {
-//     ,
-//     ctx: ^Build_Context
-// }
 
 @(private)
 _manage_slice :: proc(ctx: ^Build_Context, data: $T/[]$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
@@ -375,7 +384,7 @@ create_build_context :: proc(
     allocator := context.allocator, 
     logger := context.logger,
     cache_file_system_path := DEFAULT_CACHE_FILE_SYSTEM_PATH, 
-    c_import_output_path := DEFAULT_C_IMPORT_OUTPUT_PATH,
+    c_export_path := DEFAULT_C_EXPORT_PATH,
     caller_location := #caller_location
 ) -> (ctx: Build_Context, err: Error) {
     _start_trace()
@@ -388,10 +397,8 @@ create_build_context :: proc(
 
     gc.init_growing(&ctx.garbage_collector) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
-    //ctx.c_import_infos = make([dynamic]^C_Import_Info, ctx.allocator) or_return
-    ctx.c_import_output_path = c_import_output_path
-    ctx.steps = make([dynamic]Step, ctx.allocator) or_return
-    //ctx.post_build_steps = make([dynamic]Step, ctx.allocator) or_return
+    ctx.c_export_path = c_export_path
+    //ctx.steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = ta_os2_get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
@@ -423,9 +430,9 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     cachefs.destroy(&ctx.cache_file_system) or_return
     log.debugf("[DONE] Destroying build context file system.")
 
-    log.debugf("[START] Destroying build context step collection.")
-    delete(ctx.steps) or_return
-    log.debugf("[DONE] Destroying build context step collection.")
+    // log.debugf("[START] Destroying build context step collection.")
+    // delete(ctx.steps) or_return
+    // log.debugf("[DONE] Destroying build context step collection.")
 
     log.debugf("[START] Destroying build context garbage collector.")
     gc.destroy(&ctx.garbage_collector)
@@ -600,9 +607,13 @@ os_arch_specific_subprocess_to_subprocess :: #force_inline proc(ctx: ^Build_Cont
     return resolve_os_arch_specific_subprocess(cmd)^, nil
 }
 
+user_args :: proc() -> []string {
+    return os.args[1:]
+}
+
 /* Use the `Build_Context` to build the respective project.
 */
-build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err: Error) {
+build :: proc(ctx: ^Build_Context, args: []string, steps: []Step, caller_location := #caller_location) -> (err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -612,24 +623,226 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
 
     colour_enabled := .Terminal_Color in context.logger.options
 
-    log.infof("[START] Building.")
-    failed := true
-    defer if failed do log.errorf("[ERROR] Building.")
+    log.infof("[START] Building ...")
+    defer if err != nil do log.errorf("[FAIL] Building.")
 
-    for &c in ctx.steps {
-        if success := run_step(ctx, c) or_return; !success && c.success_required {
+    if len(args) == 0 {
+        log.warnf("[DONE] Building. Target has not been specified, skipping build process.")
+        return nil
+    }
+
+    target := args[0]
+
+    // for &c in steps {
+    //     if success := run_step(ctx, c) or_return; !success && c.success_required {
+    //         log.errorf(
+    //             "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+    //             colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+    //             colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+    //         )
+    //         break // No more steps will be ran
+    //     }
+    // }
+
+    _find_step_target :: proc(target: string, steps: []Step) -> ^Step {
+        stack := make([dynamic]^Step, 0, len(steps))
+        defer delete(stack)
+
+        for &s in steps do append(&stack, &s)
+
+        for len(stack) > 0 {
+            step := stack[len(stack)-1]
+            pop_front(&stack)
+
+            if step.name == target {
+                return step
+            }
+
+            for &child in step.children {
+                append(&stack, &child)
+            }
+        }
+
+        return nil
+    }
+
+
+    _single_thread_impl :: proc(
+        ctx: ^Build_Context,
+        target_step: ^Step,
+        colour_enabled: bool
+    ) -> (err: Error) {
+        context.allocator = ctx.allocator
+        context.logger = ctx.logger
+
+        if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
             log.errorf(
                 "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
                 colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
                 colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
             )
-            break // No more steps will be ran
+            return nil
+        }
+
+        stack := make([dynamic]^Step, 0, len(target_step.children))
+        defer delete(stack)
+
+        for &s in target_step.children do append(&stack, &s)
+
+        for len(stack) > 0 {
+            step := stack[len(stack)-1]
+            pop_front(&stack)
+
+            if success := run_step(ctx, step^) or_return; !success && step.success_required {
+                log.errorf(
+                    "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                    colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+                    colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+                )
+            } else {
+                for &child in step.children {
+                    append(&stack, &child)
+                }
+            }
+        }
+
+        return nil
+    }
+
+    _multi_thread_impl :: proc(
+        ctx: ^Build_Context,
+        target_step: ^Step,
+        colour_enabled: bool,
+        thread_count: int
+    ) -> (err: Error) {
+        _Basic_Thread_Safe :: struct($U: typeid) {
+            data: ^U,
+            mutex: sync.Mutex
+        }
+
+        context.logger = ctx.logger
+        context.allocator = ctx.allocator
+
+        if success := run_step(ctx, target_step^) or_return; !success && target_step.success_required {
+            log.errorf(
+                "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+                colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+            )
+            return nil
+        }
+
+        tsa: thread_safe_allocator.Thread_Safe_Allocator
+        thread_safe_allocator.init(&tsa, context.allocator)
+        context.allocator = tsa
+
+        tsl: thread_safe_logger.Thread_Safe_Logger
+        thread_safe_logger.init(&tsl, context.logger)
+        context.logger = tsl
+
+        ts_build_ctx: _Basic_Thread_Safe(Build_Context)
+        ts_build_ctx.data = ctx
+
+        pool: thread.Pool
+        thread.pool_init(&pool, context.allocator, thread_count)
+
+        _Task_Data :: struct {
+            ts_data_storage: ^thread_safe_array.Thread_Safe_Dynamic_Array(^_Task_Data),
+            pool: ^thread.Pool,
+            dep_step: ^Step,
+            step: ^Step,
+            ts_build_ctx: ^_Basic_Thread_Safe(Build_Context),
+            colour_enabled: bool,
+            logger: log.Logger
+        }
+
+        data_storage := make([dynamic]^_Task_Data, 0, len(target_step.children))
+        defer {
+            for data in data_storage do free(data)
+            delete(data_storage)
+        }
+
+        ts_data_storage: thread_safe_array.Thread_Safe_Dynamic_Array(^_Task_Data)
+        thread_safe_array.init_dyn_arr(&ts_data_storage, &data_storage)
+
+        _task : thread.Task_Proc : proc(task: thread.Task) {
+            context.allocator = task.allocator
+            data := transmute(^_Task_Data)task.data
+            context.logger = data.logger
+
+            if data.dep_step != nil {
+                for !data.dep_step.build_time_flags.completed && !data.dep_step.build_time_flags.failed {} 
+                // Locking the thread to only process if the dependency has finished.
+                if data.dep_step.build_time_flags.failed do return
+            }
+
+            if sync.mutex_guard(&data.ts_build_ctx.mutex) {
+                if success, step_err := run_step(data.ts_build_ctx.data, data.step^); !success && data.step.success_required {
+                    log.errorf(
+                        "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+                        data.step.name,
+                        data.colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+                        data.colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+                    )
+                    data.step.build_time_flags.failed = true
+                    return
+                }
+            } 
+            data.step.build_time_flags.completed = true
+            thread_safe_array.read_write_lock(data.ts_data_storage)
+            reserve(data.ts_data_storage.buffer, cap(data.ts_data_storage.buffer)+len(data.step.children))
+            for &child in data.step.children {
+                child_data := new(_Task_Data)
+                append(data.ts_data_storage.buffer, child_data)
+                child_data.ts_data_storage = data.ts_data_storage
+                child_data.pool = data.pool
+                child_data.dep_step = data.step
+                child_data.step = &child
+                child_data.ts_build_ctx = data.ts_build_ctx
+                child_data.colour_enabled = data.colour_enabled
+                child_data.logger = data.logger
+                thread.pool_add_task(data.pool, context.allocator, _task, child_data)
+            }
+            thread_safe_array.read_write_unlock(data.ts_data_storage)
+        }
+
+        for &child in target_step.children {
+            child_data := new(_Task_Data)
+            append(&data_storage, child_data)
+            child_data.ts_data_storage = &ts_data_storage
+            child_data.pool = &pool
+            child_data.dep_step = nil
+            child_data.step = &child
+            child_data.ts_build_ctx = &ts_build_ctx
+            child_data.colour_enabled = colour_enabled
+            child_data.logger = context.logger
+            thread.pool_add_task(&pool, context.allocator, _task, child_data)
+        }
+
+        thread.pool_start(&pool)
+        thread.pool_finish(&pool)
+        thread.pool_shutdown(&pool)
+        thread.pool_destroy(&pool)
+
+        context.allocator = thread_safe_allocator.original(&tsa)
+        context.logger = thread_safe_logger.original(&tsl)
+        return nil
+    }
+
+    target_step := _find_step_target(target, steps)
+
+    when !thread.IS_SUPPORTED {
+        return _single_thread_impl(ctx, target_step, colour_enabled)
+    } else {
+        thread_count := get_requested_thread_count()
+        if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
+            return _multi_thread_impl(ctx, target_step, colour_enabled, thread_count)
+        } else {
+            return _single_thread_impl(ctx, target_step, colour_enabled)   
         }
     }
 
-    failed = false
     log.infof("[DONE] Building.")
-
     return nil
 }
 
@@ -665,7 +878,7 @@ c_import :: proc(
     info.parser_options.discard_comments = false
     info.parser_options.extra_imports = make(map[string]string, ctx.allocator)
     info.parser_options.opaque_type_name = nil // Auto-generated
-    info.output_directory = filepath.join({ ctx.c_import_output_path, info.emit_options.package_name }, gc.allocator(&ctx.garbage_collector)) or_return
+    info.output_directory = filepath.join({ ctx.c_export_path, info.emit_options.package_name }, gc.allocator(&ctx.garbage_collector)) or_return
     return info, nil
 }
 
@@ -744,17 +957,17 @@ to_step :: proc{
     cmake_out_of_source_build_to_step
 }
 
-add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (err: Allocator_Error) {
-    _start_trace()
-    _trace(caller_location)
-    _trace()
-    defer if err == nil do _backtrace()
+// add_step :: #force_inline proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (err: Allocator_Error) {
+//     _start_trace()
+//     _trace(caller_location)
+//     _trace()
+//     defer if err == nil do _backtrace()
 
-    append(&ctx.steps, ..steps) or_return
-    return nil
-}
+//     append(&ctx.steps, ..steps) or_return
+//     return nil
+// }
 
-join_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
+merge_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #caller_location) -> (step: Step, err: Allocator_Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -772,7 +985,8 @@ join_steps :: proc(ctx: ^Build_Context, steps: ..Step, caller_location := #calle
         for &c in steps {
             if success := run_step(ctx, c) or_return; !success && c.success_required {
                 log.errorf(
-                    "This step was %[0]sREQUIRED%[1]s to pass, but %[0]sfailed%[1]s. %[0]sNO MORE STEPS WILL BE RAN%[1]s",
+                    "The step %q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+                    c.name,
                     colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
                     colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
                 )
@@ -966,11 +1180,11 @@ files_fingerprint :: proc(
                                         path := path_ptr^
                                         if !os2.exists(path) do return empty_hasher_procedure(client_data)
                                         stat, stat_err := os2.stat(path, context.allocator)
-                                        defer os2.file_info_delete(stat, context.allocator)
+                                        defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
                                         if stat_err != nil do return empty_hasher_procedure(client_data)
                                         mod_yr, mod_month, mod_day := time.date(stat.modification_time)
                                         mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-                                        return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                        return hash_algo.murmur64a(transmute([]byte)path) ~
                                             hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
                                             hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
                                             hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
@@ -1023,11 +1237,11 @@ files_fingerprint :: proc(
                                 path := path_ptr^
                                 if !os2.exists(path) do return empty_hasher_procedure(client_data)
                                 stat, stat_err := os2.stat(path, context.allocator)
-                                defer os2.file_info_delete(stat, context.allocator)
+                                defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
                                 if stat_err != nil do return empty_hasher_procedure(client_data)
                                 mod_yr, mod_month, mod_day := time.date(stat.modification_time)
                                 mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-                                return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                return hash_algo.murmur64a(transmute([]byte)path) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
@@ -1147,11 +1361,11 @@ files_fingerprint :: proc(
                                             path := path_ptr^
                                             if !os2.exists(path) do return empty_hasher_procedure(client_data)
                                             stat, stat_err := os2.stat(path, context.allocator)
-                                            defer os2.file_info_delete(stat, context.allocator)
+                                            defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
                                             if stat_err != nil do return empty_hasher_procedure(client_data)
                                             mod_yr, mod_month, mod_day := time.date(stat.modification_time)
                                             mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-                                            return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                            return hash_algo.murmur64a(transmute([]byte)path) ~
                                                 hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
                                                 hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
                                                 hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
@@ -1202,11 +1416,11 @@ files_fingerprint :: proc(
                                 path := path_ptr^
                                 if !os2.exists(path) do return empty_hasher_procedure(client_data)
                                 stat, stat_err := os2.stat(path, context.allocator)
-                                defer os2.file_info_delete(stat, context.allocator)
+                                defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
                                 if stat_err != nil do return empty_hasher_procedure(client_data)
                                 mod_yr, mod_month, mod_day := time.date(stat.modification_time)
                                 mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-                                return hash_algo.murmur64a(transmute([]byte)stat.name) ~
+                                return hash_algo.murmur64a(transmute([]byte)path) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
                                     hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
@@ -1243,7 +1457,7 @@ files_fingerprint :: proc(
         ts_santized_targets: thread_safe_array.Thread_Safe_Dynamic_Array(Hasher)
         thread_safe_array.init_dyn_arr(&ts_santized_targets, &sanitized_targets)
 
-        ts_ctx := _Basic_Thread_Safe(Build_Context) {
+        ts_build_ctx := _Basic_Thread_Safe(Build_Context) {
             data=ctx
         }
 
@@ -1252,7 +1466,7 @@ files_fingerprint :: proc(
 
         for &target, i in targets {
             task_data[i].target = target
-            task_data[i].ctx = &ts_ctx
+            task_data[i].ctx = &ts_build_ctx
             task_data[i].dir_glob_patterns = dir_glob_patterns
             task_data[i].file_glob_patterns = file_glob_patterns
             task_data[i].sanitized_targets = &ts_santized_targets
@@ -1263,6 +1477,8 @@ files_fingerprint :: proc(
         thread.pool_finish(&pool)
         thread.pool_shutdown(&pool)
         thread.pool_destroy(&pool)
+
+        context.allocator = thread_safe_allocator.original(&tsa)
 
         return fingerprint(ctx, ..sanitized_targets[:])
     }
