@@ -211,8 +211,8 @@ Build_Context :: struct {
     garbage_collector: Garbage_Collector,
     // The cache file system.
     cache_file_system: Cache_File_System,
-    // Default parent directory for `C_Import_Info` objects.  
-    // **NOTE:** You are not forced to use this for `C_Import_Info` objects, simply change `C_Import_Info.output_directory` to customize it for that specific object.
+    // Default parent directory for C imports.  
+    // **NOTE:** You are not forced to use this for C imports, simply change `C_Import_Info.output_directory` to customize it for that specific object.
     c_export_path: string,
     // Output handle for all subprocess commands.    
     // **NOTE:** Set to the system stdout (`subprocess.stdout`) by default.
