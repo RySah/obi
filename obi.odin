@@ -184,7 +184,7 @@ global_ctx: Global_Build_Context
 
 @private _User_Args_Options :: struct {
     job_count: int `args:"name=j" usage:"Number of parallel jobs / threads"`,
-    target_step: string `args:"pos=0,required" usage:"Step to run"`,
+    target_step_name: string `args:"pos=0,required" usage:"Step to run"`,
     overflow: [dynamic]string `usage:"Extra arguments"`,
 }
 
@@ -244,6 +244,8 @@ Build_Context :: struct {
 
 get_thread_count :: proc(ctx: ^Build_Context) -> int { return ctx._internal.job_count }
 set_thread_count :: proc(ctx: ^Build_Context, v: int) { ctx._internal.job_count = v }
+
+get_target_step_name :: proc(ctx: ^Build_Context) -> string { return ctx._internal.target_step_name }
 
 default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
     data := transmute(^State_Hasher_Client_Data)client_data
@@ -817,7 +819,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: Step, caller_location := #calle
     when !thread.IS_SUPPORTED {
         return _single_thread_impl(ctx, &target_step, colour_enabled)
     } else {
-        thread_count := get_requested_thread_count()
+        thread_count := get_thread_count(ctx)
         if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
             return _multi_thread_impl(ctx, &target_step, colour_enabled, thread_count)
         } else {
@@ -843,13 +845,6 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
     log.infof("[START] Building ...")
     defer if err != nil do log.errorf("[FAIL] Building.")
 
-    if len(args) == 0 {
-        log.warnf("[DONE] Building. Target has not been specified, skipping build process.")
-        return nil
-    }
-
-    target := args[0]
-
     _find_step_target :: proc(target: string, steps: []Step) -> ^Step {
         stack := make([dynamic]^Step, 0, len(steps))
         defer delete(stack)
@@ -872,7 +867,7 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
         return nil
     }
 
-    target_step := _find_step_target(target, ctx._internal.step_collection[:])
+    target_step := _find_step_target(get_target_step_name(ctx), ctx._internal.step_collection[:])
     
     run_step_tree(ctx, target_step^)
 
@@ -1527,7 +1522,7 @@ files_fingerprint :: proc(
     when !thread.IS_SUPPORTED {
         return _single_thread_impl(ctx, targets, dir_glob_patterns, file_glob_patterns)
     } else {
-        thread_count := get_requested_thread_count()
+        thread_count := get_thread_count(ctx)
         if thread_count > 1 { // TODO(rysah): Perhaps provide more conditions to help optimize usage.
             return _multi_thread_impl(ctx, targets, dir_glob_patterns, file_glob_patterns, thread_count)
         } else {
