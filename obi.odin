@@ -254,18 +254,23 @@ default_state_hasher_procedure :: proc(client_data: rawptr) -> u64 {
                 if strings.compare(full_path, exclude) == 0 do continue
             }
 
-            stat, stat_err := os2.stat(full_path, context.allocator)
-            defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
-            if stat_err != nil do return empty_hasher_procedure(client_data)
-            mod_yr, mod_month, mod_day := time.date(stat.modification_time)
-            mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
-            result |= hash_algo.murmur64a(transmute([]byte)full_path) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
-                hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+            // stat, stat_err := os2.stat(full_path, context.allocator)
+            // defer if stat_err == nil do os2.file_info_delete(stat, context.allocator)
+            // if stat_err != nil do return empty_hasher_procedure(client_data)
+            // mod_yr, mod_month, mod_day := time.date(stat.modification_time)
+            // mod_hr, mod_min, mod_sec := time.clock(stat.modification_time)
+            // result |= hash_algo.murmur64a(transmute([]byte)full_path) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_yr)) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_month)) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_day)) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_hr)) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_min)) ~
+            //     hash_algo.murmur64a(mem.any_to_bytes(mod_sec))
+
+            result |= hash_algo.murmur64a(transmute([]u8)full_path)
+            content, content_err := os2.read_entire_file(full_path, context.allocator)
+            defer if content_err == nil do delete(content)
+            result |= content_err == nil ? hash_algo.murmur64a(transmute([]u8)content) : 0
         }
     }
 
