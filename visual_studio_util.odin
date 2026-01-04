@@ -4,6 +4,7 @@ import vs "visual_studio"
 import gc "garbage_collector"
 
 VS_Error :: vs.Error
+VS_General_Error :: vs.General_Error
 VS_Release_Version :: vs.Release_Version
 VS_Release_Info :: vs.Release_Info
 VS_Release_Compare_Options :: vs.Release_Compare_Options

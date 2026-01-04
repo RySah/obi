@@ -225,7 +225,7 @@ Build_Context :: struct {
     // This is the hasher that provides a unique value to planned steps, based off the state of its environment.  
     // The **default** hasher will hash all items in the `cache_file_system`, this ensures planned steps will only be
     // ran, if not only provided the fingerprint is the same, but the state of the cache is also the same. Change this value
-    // if other states should be taken into account. The **default** is stored at `Default_State_Hasher`.
+    // if other states should be taken into account. The **default** is defined at `Default_State_Hasher`.
     state_fingerprint: Hasher,
     // Context data specific to windows. This will only be managed when `ODIN_OS == .Windows`
     windows: struct {
@@ -403,17 +403,24 @@ create_build_context :: proc(
     gc.init_growing(&ctx.garbage_collector) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_export_path = c_export_path
-    //ctx.steps = make([dynamic]Step, ctx.allocator) or_return
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = ta_os2_get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
     ctx.state_fingerprint=Default_State_Hasher
     when ODIN_OS == .Windows {
-        ctx.windows.visual_studio_releases = vs_get_release_infos(&ctx) or_return
-        best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
-        found_cmake: bool
-        ctx.windows.visual_studio_cmake_path, found_cmake = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir) or_return
-        if !found_cmake do ctx.windows.visual_studio_cmake_path = nil
+        vs_err: VS_Error
+        if ctx.windows.visual_studio_releases, vs_err = vs_get_release_infos(&ctx); vs_err == nil {
+            best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
+            found_cmake: bool
+            ctx.windows.visual_studio_cmake_path, found_cmake, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
+            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+                if !found_cmake do ctx.windows.visual_studio_cmake_path = nil
+            } else {
+                return ctx, vs_err
+            }
+        } else if vs_err != VS_General_Error.Missing_Program {
+            return ctx, vs_err
+        }
     }
     return ctx, nil
 }

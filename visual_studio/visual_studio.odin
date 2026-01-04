@@ -249,6 +249,6 @@ get_release_infos :: proc(allocator := context.allocator) -> (infos: Releases, e
             }
         }
     }
-    return infos, err == General_Error.Invalid_VS_Where_Format ? General_Error.Invalid_VS_Where_Format : General_Error.Missing_Program
+    return infos, General_Error.Missing_Program
 }
 
