@@ -164,7 +164,7 @@ odin_default_build_step :: proc(
     extra_flags: ..string, 
     planned := false, 
     caller_location := #caller_location
-) -> (step: Maybe(Step), err: Error) {
+) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -184,7 +184,7 @@ odin_default_build_step :: proc(
                 dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
                 file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
             ) or_return,
-            step.?
+            step
         ) or_return
     }
 
@@ -196,7 +196,7 @@ odin_default_run_step :: proc(
     extra_flags: ..string, 
     planned := false, 
     caller_location := #caller_location
-) -> (step: Maybe(Step), err: Error) {
+) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
@@ -215,7 +215,7 @@ odin_default_run_step :: proc(
                 dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
                 file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
             ) or_return,
-            step.?
+            step
         ) or_return
     }
 
