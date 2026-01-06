@@ -36,7 +36,7 @@ stringManagerDestroy :: proc(sm: ^String_Manager) -> (err: mem.Allocator_Error) 
 stringManagerIntern :: proc(sm: ^String_Manager, s: string) -> (out: string, err: mem.Allocator_Error) #optional_allocator_error {
     h := hash.murmur32(transmute([]byte)s)
 
-    bucket, bucket_exists := sm.cache_map[h]
+    bucket, bucket_exists := &sm.cache_map[h]
     if bucket_exists {
         for interned in bucket {
             if strings.compare(interned, s) == 0 {
@@ -47,7 +47,7 @@ stringManagerIntern :: proc(sm: ^String_Manager, s: string) -> (out: string, err
 
     out = strings.clone(s, stringManagerAllocator(sm)) or_return
     if bucket_exists {
-        append(&sm.cache_map[h], out) or_return
+        append(bucket, out) or_return
     } else {
         new_bucket := make([dynamic]string, sm.allocator) or_return
         append(&new_bucket, out) or_return
