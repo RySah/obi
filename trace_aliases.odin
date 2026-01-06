@@ -1,36 +1,33 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ryan Mensah
+
+/*
+Package obi — trace_aliases.odin
+
+This file defines wrapper code over procedures that doesnt fit the `obi` standard model for tracing errors.
+
+Any procedure here should be used alongside `or_return`, otherwise use the original implemenetation.
+
+IMPLMENTATION TIPS:
+- Procedures that soley return `Allocator_Error` should not be implemented here, as the tracking allocator or performance tracker, can easily identify allocator errors.
+- To succesfully integrate a procedure into this model it should be modeled as such:
+```
+foo :: proc(..., caller_location := #caller_location) -> (..., err: Error) {
+    _start_trace() // Global build context creates a new state
+    _trace(caller_location) // Adds this location to the new state
+    defer if err == nil do _backtrace() // In the case no error has occured, the new state will be discared in favor of the old
+
+    return bar(...) // Backing procedure to run
+} 
+```
+- To enforce UX, prefix all procedures with `ta_`.
+*/
+
 #+private
 package obi
 
 import "core:os/os2"
 import subprocess "subprocess"
-
-/*
-This file is purposed to write wrapper code over procedures that can return errors (everything that can implicitly cast to `Error`) and we cannot necessarily edit.
-Each procedure here must implement this trace "template".
-
-Things to target:
-- Anything file related that can return an error
-- Anything and everything OS2/OS that returns an error
-- Anything that returns errors that are far to opaque and requires more context by its location
-
-Any function here should be used alongside `or_return` otherwise use the original implementation.
-
-NOTE: Things that solely return `Allocator_Error` should be ignored, as a tracking allocator can track that.
-
-```
-foo :: proc(..., caller_location := #caller_location) -> (..., err: Error) {
-    _start_trace()
-    _trace(caller_location)
-    defer if err == nil do _backtrace()
-}
-```
-To help identify errors further.
-
-Alias each of these procedures with `ta_`
-
-Name formatting e.g. `strings.concatenate` -> `ta_strings_concatenate`
-*/
-
 
 ta_os2_get_working_directory :: #force_inline proc(allocator: Allocator, caller_location := #caller_location) -> (dir: string, err: os2.Error) {
     _start_trace()

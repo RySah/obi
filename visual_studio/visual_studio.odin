@@ -71,7 +71,10 @@ Release_Compare_Options :: struct {
 }
 
 is_better_release :: proc(a, b: Release_Info, compare_opts := Release_Compare_Options{}) -> bool {
-    if compare_opts.no_prerelease && b.is_prerelease do return true
+    if compare_opts.no_prerelease {
+        if a.is_prerelease && !b.is_prerelease do return false
+        if !a.is_prerelease && b.is_prerelease do return true
+    }
     return is_better_version(a.version, b.version)
 }
 
