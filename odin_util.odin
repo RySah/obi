@@ -1,10 +1,18 @@
+
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ryan Mensah
+
+/*
+Package obi — odin_util.odin
+
+This file defines build utilites for the odin programming language.
+*/
+
 package obi
 
 import "core:strings"
 
 import gc "garbage_collector"
-
-//TODO(rysah): Use `ta_subprocess_which` or `subprocess.which` to find the odin executable.
 
 Odin_Build_Mode_Type :: enum int {
     Executable,
@@ -26,10 +34,8 @@ Odin_Build_Path :: union {
 Odin_Build :: struct {
     // Sets the build mode
     mode: Odin_Build_Mode_Type,
-
     // File or directory to build
     path: Odin_Build_Path,
-
     // Extra build flags
     extra_flags: []string
 }
@@ -37,12 +43,24 @@ Odin_Build :: struct {
 Odin_Run :: struct {
     // File or directory to build
     path: Odin_Build_Path,
-
     // Extra build flags
     extra_flags: []string
 }
 
 // Construct an `Sub_Process_Command` that expresses the specified `Odin_Build` object.
+
+/*
+**Description**:
+- Converts `Odin_Build` to a subprocess command (`Sub_Process_Command`).
+
+**Params**:
+- `ctx: ^Build_Context` — Memory location of build context.
+- `b: ^Odin_Build` — Memory location of `Odin_Build`.
+
+**Returns**:
+- `cmd_p: ^Sub_Process_Command` - Resulting subprocess command.
+- `err: Error` - Non-nil if memory allocation failed.
+*/
 odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_location := #caller_location) -> (cmd_p: ^Sub_Process_Command, err: Error) {
     _start_trace()
     _trace(caller_location)
@@ -62,7 +80,7 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_loc
         env=nil,
         stdin=nil
     }
-    cmd.command[0] = _manage_mem(ctx, "odin") or_return // TODO(rysah): This uneccessarily creates duplicates in memory, perhaps create storage for string literals
+    cmd.command[0] = _manage_mem(ctx, "odin") or_return
     cmd.command[1] = _manage_mem(ctx, "build") or_return
     i := 2
     switch v in b.path {
@@ -101,6 +119,18 @@ odin_build_to_subprocess :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_loc
     return cmd_p, nil
 }
 
+/*
+**Description**:
+- Converts `Odin_Build` to a build step (`Step`).
+
+**Params**:
+- `ctx: ^Build_Context` — Memory location of build context.
+- `b: ^Odin_Build` — Memory location of `Odin_Build`.
+
+**Returns**:
+- `step: ^Step` - Resulting build step.
+- `err: Error` - Non-nil if memory allocation failed.
+*/
 odin_build_to_step :: proc(ctx: ^Build_Context, b: ^Odin_Build, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)

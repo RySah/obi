@@ -72,7 +72,7 @@ vs_get_best_release :: vs.get_best_release
 - Gets the `VsDevCmd.bat` path for a specific release.
 
 **Params**:
-- `ctx: Build_Context` — Build context that manages memory.
+- `ctx: ^Build_Context` — Memory location of build context, that manages memory.
 - `release: VS_Release_Info` — Release to derive the path from.
 
 **Returns**:
@@ -96,7 +96,7 @@ vs_get_vsdevcmd_path :: proc(ctx: ^Build_Context, release: VS_Release_Info, call
 - Queries all Visual Studio releases installed on the system.
 
 **Params**:
-- `ctx: Build_Context` — Build context that manages memory.
+- `ctx: ^Build_Context` — Memory location of build context, that manages memory.
 
 **Returns**:
 - `infos` — List of discovered releases.
@@ -125,7 +125,6 @@ vs_get_release_infos :: proc(ctx: ^Build_Context, caller_location := #caller_loc
 - `output` — Cloned release info.
 - `err` — Non-nil if allocation fails.
 */
-
 vs_clone_release_info :: proc(info: VS_Release_Info, allocator := context.allocator, caller_location := #caller_location) -> (output: VS_Release_Info, err: Allocator_Error) #optional_allocator_error {
     _start_trace()
     _trace(caller_location)
@@ -140,7 +139,7 @@ vs_clone_release_info :: proc(info: VS_Release_Info, allocator := context.alloca
 - Locates an executable or file associated with a specific Visual Studio release.
 
 **Params**:
-- `ctx: Build_Context` — Build context that manages memory.
+- `ctx: ^Build_Context` — Memory location of build context, that manages memory.
 - `release: VS_Release_Info` — Release whose environment is searched.
 - `name: string` — Program or file name to locate.
 - `cwd: string` — Optional working directory for resolution.
@@ -169,7 +168,7 @@ vs_which :: proc(ctx: ^Build_Context, release: VS_Release_Info, name: string, cw
 - Useful if you dont want to manage the memory for the output path.
 
 **Params**:
-- `ctx: Build_Context` — Build context that manages memory.
+- `ctx: ^Build_Context` — Memory location of build context, that manages memory.
 - `release: VS_Release_Info` — Release whose environment is searched.
 - `name: string` — Program or file name to locate.
 - `cwd: string` — Optional working directory for resolution.
