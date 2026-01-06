@@ -184,3 +184,6 @@ manage_mut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Er
         return new_clone(value^, allocator=vmem.arena_allocator(collector))
     }
 }
+
+@(require_results, no_sanitize_address)
+mut_allocator :: proc(collector: ^Garbage_Collector) -> mem.Allocator { return vmem.arena_allocator(collector) }
