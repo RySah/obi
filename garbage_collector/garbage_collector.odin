@@ -5,6 +5,7 @@ import "core:mem"
 import "core:hash"
 import "core:reflect"
 import "core:strings"
+import "core:fmt"
 
 import "base:intrinsics"
 
@@ -151,39 +152,115 @@ create_intern_map :: proc(collector: ^Garbage_Collector, T: typeid) -> (out: ^In
     return &collector.intern_pool[T]
 }
 
-can_manage :: proc($T: typeid) -> bool {
-    return (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && T != Intern_Value 
-}
+manage_immut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
+    when intrinsics.type_is_pointer(T) && intrinsics.type_is_slice(intrinsics.type_elem_type(T)) {
+        // Interning the internal slice is useless
+        ptr := manage_mut(collector, value) or_return
+        ptr^ = manage_immut_slice(collector, value^, false) or_return
+        return ptr, nil
+    } else {
+        intern_map, intern_map_exists := &collector.intern_pool[typeid_of(T)]
+        if !intern_map_exists do intern_map = create_intern_map(collector, typeid_of(T))
 
-manage_immut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where can_manage(T) #optional_allocator_error {
-    intern_map, intern_map_exists := collector.intern_pool[typeid_of(T)]
-    if !intern_map_exists do intern_map = create_intern_map(collector, typeid_of(T))
+        intern_value := intern_add(intern_map, value) or_return
 
-    intern_value := intern_add(intern_map, value) or_return
-
-    when T == string {
-        bytes_ptr := transmute([^]byte)intern_value.data
-        return strings.string_from_ptr(bytes_ptr, intern_value.size)
-    } else when T == cstring {
-        bytes_ptr := transmute([^]byte)intern_value.data
-        return cstring(bytes_ptr)
-    } else { // T/^P
-        return transmute(T)intern_value.data
+        when T == string {
+            bytes_ptr := transmute([^]byte)intern_value.data
+            return strings.string_from_ptr(bytes_ptr, intern_value.size), nil
+        } else when T == cstring {
+            bytes_ptr := transmute([^]byte)intern_value.data
+            return cstring(bytes_ptr)
+        } else { // T/^P
+            return transmute(T)intern_value.data, nil
+        }
     }
 }
+manage_immut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) #optional_allocator_error {
+    // Slices should not be interned, as its meaningless
+    new_slice := make([]E, len(value), mut_allocator(collector)) or_return
+    when manage_elements {
+        for &x, i in value {
+            when intrinsics.type_is_slice(E) {
+                new_slice[i] = manage_immut_slice(collector, x, manage_elements) or_return
+            } else {
+                new_slice[i] = manage_immut(collector, x) or_return
+            }
+        }
+    } else {
+        copy(new_slice, value)
+    }
+    return new_slice, nil
+}
 
-manage_mut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where can_manage(T) #optional_allocator_error {
+immut_print :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> (string, Error) {
+    content := fmt.aprint(..args, sep=sep)
+    defer delete(content)
+    return manage_immut(collector, content)
+}
+immut_println :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> (string, Error) {
+    content := fmt.aprintln(..args, sep=sep)
+    defer delete(content)
+    return manage_immut(collector, content)
+}
+immut_printf :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any, newline := false) -> (string, Error) {
+    content := fmt.aprintf(fmt_, ..args, newline=newline)
+    defer delete(content)
+    return manage_immut(collector, content)
+}
+immut_printfln :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any) -> (string, Error) {
+    content := fmt.aprintfln(fmt_, ..args)
+    defer delete(content)
+    return manage_immut(collector, content)
+}
+iprint :: immut_print
+iprintln :: immut_println
+iprintf :: immut_printf
+iprintfln :: immut_printfln
+
+manage_mut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
     when T == string {
-        return strings.clone(value, allocator=vmem.arena_allocator(collector))
+        return strings.clone(value, allocator=mut_allocator(collector))
     } else when T == cstring {
         buf_size := len(value)
-        copy_buf := transmute([^]byte)mem.alloc(buf_size, allocator=vmem.arena_allocator(collector)) or_return
+        copy_buf := transmute([^]byte)mem.alloc(buf_size, allocator=mut_allocator(collector)) or_return
         copy(copy_buf, transmute([^]byte)value, buf_size)
         return cstring(copy_buf), nil
     } else { // T/^P
-        return new_clone(value^, allocator=vmem.arena_allocator(collector))
+        return new_clone(value^, allocator=mut_allocator(collector))
     }
+}
+manage_mut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) where (intrinsics.type_is_string(E) || intrinsics.type_is_pointer(E)) && (intrinsics.type_is_slice(T)) #optional_allocator_error {
+    new_slice := make([]E, len(value), mut_allocator(collector)) or_return
+    when manage_elements {
+        for &x, i in value {
+            when intrinsics.type_is_slice(E) {
+                new_slice[i] = manage_mut_slice(collector, x, manage_elements) or_return
+            } else {
+                new_slice[i] = manage_mut(collector, x) or_return
+            }
+        }
+    } else {
+        copy(new_slice, value)
+    }
+    return new_slice, nil
 }
 
 @(require_results, no_sanitize_address)
 mut_allocator :: proc(collector: ^Garbage_Collector) -> mem.Allocator { return vmem.arena_allocator(collector) }
+
+mut_print :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> string {
+    return fmt.aprint(..args, sep=sep, allocator=mut_allocator(collector))
+}
+mut_println :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> string {
+    return fmt.aprintln(..args, sep=sep, allocator=mut_allocator(collector))
+}
+mut_printf :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any, newline := false) -> string {
+    return fmt.aprintf(fmt_, ..args, newline=newline, allocator=mut_allocator(collector))
+}
+mut_printfln :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any) -> string {
+    return fmt.aprintfln(fmt_, ..args, allocator=mut_allocator(collector))
+}
+mprint :: mut_print
+mprintln :: mut_println
+mprintf :: mut_printf
+mprintfln :: mut_printfln

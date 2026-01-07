@@ -1,6 +1,7 @@
 package obi
 
 import "core:os/os2"
+import gc "garbage_collector"
 
 File_Create :: struct {
     path: string,
@@ -14,7 +15,9 @@ file_create_to_step :: proc(ctx: ^Build_Context, fc: ^File_Create, caller_locati
     _trace()
     defer if err == nil do _backtrace()
 
-    owned_fc := _manage_mem(ctx, fc) or_return
+    owned_fc := gc.manage_mut(&ctx.garbage_collector, fc) or_return
+    owned_fc.path = gc.manage_immut(&ctx.garbage_collector, fc.path) or_return
+    owned_fc.data = gc.manage_immut_slice(&ctx.garbage_collector, fc.data, false) or_return
     step = create_step(ctx) or_return
     step.client_data = owned_fc
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
@@ -37,7 +40,8 @@ mkdir_to_step :: proc(ctx: ^Build_Context, mkdir: ^MkDir, caller_location := #ca
     _trace()
     defer if err == nil do _backtrace()
 
-    owned_mkdir := _manage_mem(ctx, mkdir) or_return
+    owned_mkdir := gc.manage_mut(&ctx.garbage_collector, mkdir) or_return
+    owned_mkdir.path = gc.manage_immut(&ctx.garbage_collector, mkdir.path) or_return
     step = create_step(ctx) or_return
     step.client_data = owned_mkdir
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {

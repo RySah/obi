@@ -573,8 +573,13 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, calle
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
-
-    owned_cmd := _manage_mem(ctx, cmd, clone_members=true) or_return
+    
+    owned_cmd := gc.manage_mut(&ctx.garbage_collector, cmd) or_return
+    owned_cmd.working_dir = gc.manage_immut(&ctx.garbage_collector, cmd.working_dir) or_return
+    owned_cmd.command = gc.manage_immut_slice(&ctx.garbage_collector, cmd.command, true) or_return
+    if env, env_exists := cmd.env.?; env_exists {
+        owned_cmd.env = gc.manage_immut_slice(&ctx.garbage_collector, env, true) or_return
+    }
     step = create_step(ctx) or_return
     step.client_data = owned_cmd
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
@@ -1010,7 +1015,7 @@ create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller
     _trace()
     defer if err == nil do _backtrace()
 
-    step = new(Step, gc.allocator(&ctx.garbage_collector)) or_return
+    step = new(Step, gc.mut_allocator(&ctx.garbage_collector)) or_return
     step.children = make([dynamic]^Step, ctx.allocator) or_return
     //append(&ctx._internal.step_collection, step) or_return
     return step, nil
@@ -1057,8 +1062,9 @@ merge_steps :: proc(ctx: ^Build_Context, steps: ..^Step, caller_location := #cal
     _trace()
     defer if err == nil do _backtrace()
 
-    owned_steps := _manage_mem(ctx, steps) or_return
-    owned_steps_ptr := _manage_mem(ctx, &owned_steps) or_return
+    owned_steps := gc.manage_immut_slice(&ctx.garbage_collector, steps, false) or_return
+    owned_steps_ptr := gc.manage_immut(&ctx.garbage_collector, &owned_steps) or_return
+
     step = create_step(ctx) or_return
     step.client_data = owned_steps_ptr
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {

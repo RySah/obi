@@ -80,27 +80,29 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #ca
     _trace()
     defer if err == nil do _backtrace()
 
-    make_path: string = ---
+    nonintern_make_path: string = ---
     {
         found := false
         compatible := card(m.compatibility) == 0 ? ASSUMED_DEFAULT_MAKE_TYPES : m.compatibility
         if card(compatible) > 0 {
             if .GNU in compatible {
-                make_path, found = ta_subprocess_which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                nonintern_make_path, found = ta_subprocess_which("make", search_local=true) or_return
             }
             if .BSD in compatible && !found {
-                make_path, found = ta_subprocess_which("bmake", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                nonintern_make_path, found = ta_subprocess_which("bmake", search_local=true) or_return
             }
             if .MingW32 in compatible && !found {
-                make_path, found = ta_subprocess_which("mingw32-make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                nonintern_make_path, found = ta_subprocess_which("mingw32-make", search_local=true) or_return
                 if !found {
-                    make_path, found = ta_subprocess_which("make", gc.allocator(&ctx.garbage_collector), search_local=true) or_return
+                    nonintern_make_path, found = ta_subprocess_which("make", search_local=true) or_return
                 }
             }
         }
 
         if !found do return nil, Make_Error.Incompatible_Or_No_Make_Program
     }
+    defer delete(nonintern_make_path)
+    make_path := gc.manage_immut(&ctx.garbage_collector, nonintern_make_path) or_return
 
     command_size := 1 // make
     command_size += 2 // -C <dir> // -f <file>
@@ -116,8 +118,8 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #ca
     command_size += 1 if m.mark_targets else 0
     command_size += len(m.extra_flags)
     cmd: Sub_Process_Command = {
-        working_dir = _manage_mem(ctx, ctx.working_dir) or_return,
-        command = make([]string, command_size, gc.allocator(&ctx.garbage_collector)) or_return,
+        working_dir = gc.manage_immut(&ctx.garbage_collector, ctx.working_dir) or_return,
+        command = make([]string, command_size, gc.mut_allocator(&ctx.garbage_collector)) or_return,
         env=nil,
         stdin=nil
     }
@@ -125,44 +127,47 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #ca
     i := 1
     switch v in m.path {
         case Make_File_Path:
-            cmd.command[i] = _manage_mem(ctx, "-f") or_return
+            cmd.command[i] = "-f"
             i += 1
-            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
+            cmd.command[i] = gc.manage_immut(&ctx.garbage_collector, transmute(string)v) or_return
             i += 1
         case Make_CWD_Path:
-            cmd.command[i] = _manage_mem(ctx, "-C") or_return
+            cmd.command[i] = "-C"
             i += 1
-            cmd.command[i] = _manage_mem(ctx, transmute(string)v) or_return
+            cmd.command[i] = gc.manage_immut(&ctx.garbage_collector, transmute(string)v) or_return
             i += 1
     }
     if count, ok := m.job_count.?; ok {
-        cmd.command[i] = fmt.aprint("-j", count, sep="", allocator=gc.allocator(&ctx.garbage_collector))
+        cmd.command[i] = gc.iprint(&ctx.garbage_collector, "-j", count, sep="") or_return
         i += 1
     }
     if m.continue_after_errors {
-        cmd.command[i] = _manage_mem(ctx, "-k") or_return
+        cmd.command[i] = "-k"
         i += 1
     }
     if m.ignore_errors {
-        cmd.command[i] = _manage_mem(ctx, "-i") or_return
+        cmd.command[i] = "-i"
         i += 1
     }
     if m.print_only_commands {
-        cmd.command[i] = _manage_mem(ctx, "-n") or_return
+        cmd.command[i] = "-n"
         i += 1
     }
     if m.silent {
-        cmd.command[i] = _manage_mem(ctx, "-s") or_return
+        cmd.command[i] = "-s"
         i += 1
     }
     if m.mark_targets {
-        cmd.command[i] = _manage_mem(ctx, "-t") or_return
+        cmd.command[i] = "-t"
         i += 1
     }
-
-    extra_flags := _manage_mem(ctx, m.extra_flags, clone_strings=true) or_return
-    for &fl, j in extra_flags do cmd.command[i+j] = fl
-    cmd_p = _manage_mem(ctx, &cmd, clone_members=false) or_return
+    for &fl, j in m.extra_flags do cmd.command[i+j] = gc.manage_immut(&ctx.garbage_collector, fl) or_return
+    cmd_p = gc.manage_mut(&ctx.garbage_collector, &cmd) or_return
+    cmd_p.working_dir = gc.manage_immut(&ctx.garbage_collector, cmd.working_dir) or_return
+    cmd_p.command = gc.manage_immut_slice(&ctx.garbage_collector, cmd.command, false) or_return
+    // if env, env_exists := cmd.env.?; env_exists {
+    //     cmd_p.env = gc.manage_immut_slice(&ctx.garbage_collector, env, true) or_return
+    // }
     return cmd_p, nil
 }
 

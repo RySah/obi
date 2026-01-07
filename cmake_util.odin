@@ -34,7 +34,7 @@ _which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority, call
 
     switch priority {
         case .User: 
-            path, found = ta_subprocess_which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
+            path, found = ta_subprocess_which("cmake", allocator=gc.mut_allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
             when ODIN_OS == .Windows {
                 if !found {
                     path, found = ctx.windows.visual_studio_cmake_path.?
@@ -45,7 +45,7 @@ _which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority, call
                 path, found = ctx.windows.visual_studio_cmake_path.?
             }
             if !found {
-                path, found = ta_subprocess_which("cmake", allocator=gc.allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
+                path, found = ta_subprocess_which("cmake", allocator=gc.mut_allocator(&ctx.garbage_collector), cwd=ctx.working_dir, search_local=true) or_return
             }
     }
     return path, found, nil
