@@ -1,4 +1,4 @@
-package garbage_collector
+package canonical_region
 
 import vmem "core:mem/virtual"
 import "core:mem"
@@ -98,7 +98,7 @@ cstring_to_intern_value :: proc(v: cstring) -> (out: Intern_Value) {
 }
 to_intern_value :: proc{any_to_intern_value,parapoly_to_intern_value,string_to_intern_value,cstring_to_intern_value}
 
-Garbage_Collector :: struct {
+Region :: struct {
     using arena: vmem.Arena,
     intern_pool: map[typeid]Intern
 }
@@ -110,7 +110,7 @@ DEFAULT_STATIC_COMMIT_SIZE : uint : vmem.DEFAULT_ARENA_STATIC_COMMIT_SIZE
 
 @(require_results, no_sanitize_address)
 init_growing :: proc(
-    collector: ^Garbage_Collector, 
+    collector: ^Region, 
     backing_allocator: mem.Allocator, 
     reserved: uint = DEFAULT_GROWING_MINIMUM_BLOCK_SIZE
 ) -> (err: Error) {
@@ -120,7 +120,7 @@ init_growing :: proc(
 
 @(require_results, no_sanitize_address)
 init_static :: proc(
-    collector: ^Garbage_Collector, 
+    collector: ^Region, 
     backing_allocator: mem.Allocator, 
     reserved: uint = DEFAULT_STATIC_RESERVE_SIZE, 
     commit_size: uint = DEFAULT_STATIC_COMMIT_SIZE
@@ -131,7 +131,7 @@ init_static :: proc(
 
 @(require_results, no_sanitize_address)
 init_buffer :: proc(
-    collector: ^Garbage_Collector, 
+    collector: ^Region, 
     backing_allocator: mem.Allocator, 
     buffer: []byte
 ) -> (err: Error) {
@@ -139,20 +139,20 @@ init_buffer :: proc(
     return vmem.arena_init_buffer(collector, buffer)
 }
 
-destroy :: proc(collector: ^Garbage_Collector) -> Error {
+destroy :: proc(collector: ^Region) -> Error {
     vmem.arena_destroy(collector)
     for _, &intern in collector.intern_pool do intern_destroy(&intern) or_return
     delete(collector.intern_pool) or_return
     return nil
 }
 
-create_intern_map :: proc(collector: ^Garbage_Collector, T: typeid) -> (out: ^Intern) {
+create_intern_map :: proc(collector: ^Region, T: typeid) -> (out: ^Intern) {
     collector.intern_pool[T] = Intern{}
     intern_init(&collector.intern_pool[T], vmem.arena_allocator(collector), allocator=collector.intern_pool.allocator)
     return &collector.intern_pool[T]
 }
 
-manage_immut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
+manage_immut :: proc(collector: ^Region, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
     when intrinsics.type_is_pointer(T) && intrinsics.type_is_slice(intrinsics.type_elem_type(T)) {
         // Interning the internal slice is useless
         ptr := manage_mut(collector, value) or_return
@@ -175,7 +175,7 @@ manage_immut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: 
         }
     }
 }
-manage_immut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) #optional_allocator_error {
+manage_immut_slice :: proc(collector: ^Region, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) #optional_allocator_error {
     // Slices should not be interned, as its meaningless
     new_slice := make([]E, len(value), mut_allocator(collector)) or_return
     when manage_elements {
@@ -192,22 +192,22 @@ manage_immut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manag
     return new_slice, nil
 }
 
-immut_print :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> (string, Error) {
+immut_print :: proc(collector: ^Region, args: ..any, sep := " ") -> (string, Error) {
     content := fmt.aprint(..args, sep=sep)
     defer delete(content)
     return manage_immut(collector, content)
 }
-immut_println :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> (string, Error) {
+immut_println :: proc(collector: ^Region, args: ..any, sep := " ") -> (string, Error) {
     content := fmt.aprintln(..args, sep=sep)
     defer delete(content)
     return manage_immut(collector, content)
 }
-immut_printf :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any, newline := false) -> (string, Error) {
+immut_printf :: proc(collector: ^Region, fmt_: string, args: ..any, newline := false) -> (string, Error) {
     content := fmt.aprintf(fmt_, ..args, newline=newline)
     defer delete(content)
     return manage_immut(collector, content)
 }
-immut_printfln :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any) -> (string, Error) {
+immut_printfln :: proc(collector: ^Region, fmt_: string, args: ..any) -> (string, Error) {
     content := fmt.aprintfln(fmt_, ..args)
     defer delete(content)
     return manage_immut(collector, content)
@@ -217,7 +217,7 @@ iprintln :: immut_println
 iprintf :: immut_printf
 iprintfln :: immut_printfln
 
-manage_mut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
+manage_mut :: proc(collector: ^Region, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
     when T == string {
         return strings.clone(value, allocator=mut_allocator(collector))
     } else when T == cstring {
@@ -229,7 +229,7 @@ manage_mut :: proc(collector: ^Garbage_Collector, value: $T) -> (out: T, err: Er
         return new_clone(value^, allocator=mut_allocator(collector))
     }
 }
-manage_mut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) where (intrinsics.type_is_string(E) || intrinsics.type_is_pointer(E)) && (intrinsics.type_is_slice(T)) #optional_allocator_error {
+manage_mut_slice :: proc(collector: ^Region, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) where (intrinsics.type_is_string(E) || intrinsics.type_is_pointer(E)) && (intrinsics.type_is_slice(T)) #optional_allocator_error {
     new_slice := make([]E, len(value), mut_allocator(collector)) or_return
     when manage_elements {
         for &x, i in value {
@@ -246,18 +246,18 @@ manage_mut_slice :: proc(collector: ^Garbage_Collector, value: $T/[]$E, $manage_
 }
 
 @(require_results, no_sanitize_address)
-mut_allocator :: proc(collector: ^Garbage_Collector) -> mem.Allocator { return vmem.arena_allocator(collector) }
+mut_allocator :: proc(collector: ^Region) -> mem.Allocator { return vmem.arena_allocator(collector) }
 
-mut_print :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> string {
+mut_print :: proc(collector: ^Region, args: ..any, sep := " ") -> string {
     return fmt.aprint(..args, sep=sep, allocator=mut_allocator(collector))
 }
-mut_println :: proc(collector: ^Garbage_Collector, args: ..any, sep := " ") -> string {
+mut_println :: proc(collector: ^Region, args: ..any, sep := " ") -> string {
     return fmt.aprintln(..args, sep=sep, allocator=mut_allocator(collector))
 }
-mut_printf :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any, newline := false) -> string {
+mut_printf :: proc(collector: ^Region, fmt_: string, args: ..any, newline := false) -> string {
     return fmt.aprintf(fmt_, ..args, newline=newline, allocator=mut_allocator(collector))
 }
-mut_printfln :: proc(collector: ^Garbage_Collector, fmt_: string, args: ..any) -> string {
+mut_printfln :: proc(collector: ^Region, fmt_: string, args: ..any) -> string {
     return fmt.aprintfln(fmt_, ..args, allocator=mut_allocator(collector))
 }
 mprint :: mut_print
