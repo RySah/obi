@@ -210,7 +210,7 @@ Build_Context :: struct {
     allocator: Allocator,
     // Logger
     logger: log.Logger,
-    // Garbage collector for owned resources
+    // Intern arena for deduplicating and owning resources.
     intern_arena: Intern_Arena,
     // The cache file system.
     cache_file_system: Cache_File_System,
@@ -295,46 +295,6 @@ Default_State_Hasher :: Hasher {
     procedure=default_state_hasher_procedure,
     client_data=nil
 }
-
-// @(private)
-// _manage_slice :: proc(ctx: ^Build_Context, data: $T/[]$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
-//     return slice.clone(data, gc.allocator(&ctx.garbage_collector))
-// }
-// @(private)
-// _manage_string :: proc(ctx: ^Build_Context, data: string) -> (clone: string, err: Allocator_Error) #optional_allocator_error {
-//     return strings.clone(data, gc.allocator(&ctx.garbage_collector))
-// }
-// @(private)
-// _manage_ptr :: proc(ctx: ^Build_Context, data: $T/^$E) -> (clone: T, err: Allocator_Error) #optional_allocator_error {
-//     gc_allocator := gc.allocator(&ctx.garbage_collector)
-//     clone = new_clone(data^, gc_allocator) or_return
-//     return clone, nil
-// }
-// @(private)
-// _manage_string_slice :: proc(ctx: ^Build_Context, data: []string, clone_strings:=true) -> (clone: []string, err: Allocator_Error) #optional_allocator_error {
-//     clone = _manage_slice(ctx, data) or_return
-//     if clone_strings {
-//         for &s, i in data {
-//             clone[i] = _manage_string(ctx, s) or_return
-//         }
-//     }
-//     return clone, nil
-// }
-// @(private)
-// _manage_cmd :: proc(ctx: ^Build_Context, data: ^Sub_Process_Command, clone_members := false) -> (clone: ^Sub_Process_Command, err: Allocator_Error) #optional_allocator_error {
-//     clone = _manage_ptr(ctx, data) or_return
-//     if clone_members {
-//         clone.command = _manage_slice(ctx, data.command) or_return
-//         if env, ok := data.env.?; ok {
-//             clone.env = _manage_slice(ctx, env) or_return
-//         } else {
-//             clone.env = nil
-//         }
-//         clone.working_dir = _manage_string(ctx, data.working_dir) or_return
-//     }
-//     return clone, nil
-// }
-// @(private) _manage_mem :: proc{_manage_slice,_manage_string,_manage_ptr,_manage_cmd,_manage_string_slice}
 
 Debug_Mode_Lowest_Build_Logger_Level :: log.Level.Debug
 Release_Mode_Lowest_Build_Logger_Level :: log.Level.Info
