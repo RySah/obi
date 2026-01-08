@@ -10,7 +10,7 @@ import "core:flags"
 import "base:runtime"
 
 import vs "visual_studio"
-import gc "garbage_collector"
+import ia "intern_arena"
 import cu "bindgen/c/clang_util"
 import lc "bindgen/c/clang_util/libclang"
 
@@ -84,7 +84,7 @@ uc_expand_error :: proc(err: Error, allocator := context.allocator) -> string {
 expand_error :: proc(ctx: ^Build_Context, err: Error) -> (output: string) {    
     expanded := uc_expand_error(err)
     defer delete(expanded)
-    output = strings.clone(expanded, gc.mut_allocator(&ctx.garbage_collector))
+    output = strings.clone(expanded, ia.allocator(&ctx.intern_arena))
     return output
 }
 
@@ -139,7 +139,7 @@ uc_blame :: proc(err: Error, allocator := context.allocator, allow_newlines := t
 blame :: proc(ctx: ^Build_Context, err: Error, allow_newlines := true) -> (output: string) {
     expanded := uc_blame(err, allow_newlines=allow_newlines)
     defer delete(expanded)
-    output = strings.clone(expanded, gc.mut_allocator(&ctx.garbage_collector))
+    output = strings.clone(expanded, ia.allocator(&ctx.intern_arena))
     return output
 }
 

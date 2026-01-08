@@ -3,7 +3,7 @@ package intern_arena
 import vmem "core:mem/virtual"
 import "core:mem"
 import "core:hash"
-import "core:reflect"
+import "core:slice"
 import "core:strings"
 import "core:fmt"
 
@@ -148,116 +148,116 @@ create_intern_pool :: proc(arena: ^Arena, T: typeid) -> (out: ^Intern_Pool) {
     return &arena.intern_pools[T]
 }
 
+intern_string :: proc(arena: ^Arena, entry: string) -> (out: string, err: Error) #optional_allocator_error {
+    intern_pool, intern_pool_exists := &arena.intern_pools[string]
+    if !intern_pool_exists do intern_pool = create_intern_pool(arena, string)
 
-manage_immut :: proc(arena: ^Arena, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
-    when intrinsics.type_is_pointer(T) && intrinsics.type_is_slice(intrinsics.type_elem_type(T)) {
-        // Interning the internal slice is useless
-        ptr := manage_mut(arena, value) or_return
-        ptr^ = manage_immut_slice(arena, value^, false) or_return
-        return ptr, nil
-    } else {
-        intern_map, intern_map_exists := &arena.intern_pools[typeid_of(T)]
-        if !intern_map_exists do intern_map = create_intern_pool(arena, typeid_of(T))
+    intern_v := intern_pool_add(intern_pool, entry) or_return
 
-        intern_value := intern_pool_add(intern_map, value) or_return
-
-        when T == string {
-            bytes_ptr := transmute([^]byte)intern_value.data
-            return strings.string_from_ptr(bytes_ptr, intern_value.size), nil
-        } else when T == cstring {
-            bytes_ptr := transmute([^]byte)intern_value.data
-            return cstring(bytes_ptr)
-        } else { // T/^P
-            return transmute(T)intern_value.data, nil
-        }
-    }
+    bytes_ptr := transmute([^]byte)intern_v.data
+    return strings.string_from_ptr(bytes_ptr, intern_v.size), nil
 }
-manage_immut_slice :: proc(arena: ^Arena, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) #optional_allocator_error {
-    // Slices should not be interned, as its meaningless
-    new_slice := make([]E, len(value), mut_allocator(arena)) or_return
-    when manage_elements {
-        for &x, i in value {
-            when intrinsics.type_is_slice(E) {
-                new_slice[i] = manage_immut_slice(arena, x, manage_elements) or_return
-            } else {
-                new_slice[i] = manage_immut(arena, x) or_return
-            }
-        }
-    } else {
-        copy(new_slice, value)
-    }
-    return new_slice, nil
+intern_cstring :: proc(arena: ^Arena, entry: cstring) -> (out: cstring, err: Error) #optional_allocator_error {
+    intern_pool, intern_pool_exists := &arena.intern_pools[string]
+    if !intern_pool_exists do intern_pool = create_intern_pool(arena, string)
+
+    intern_v := intern_pool_add(intern_pool, entry) or_return
+
+    bytes_ptr := transmute([^]byte)intern_v.data
+    return cstring(bytes_ptr), nil
+}
+intern_ptr :: proc(arena: ^Arena, entry: $T/^$P) -> (out: T, err: Error) #optional_allocator_error {
+    intern_pool, intern_pool_exists := &arena.intern_pools[T]
+    if !intern_pool_exists do intern_pool = create_intern_pool(arena, T)
+
+    intern_v := intern_pool_add(intern_pool, entry) or_return
+
+    return transmute(T)intern_v.data, nil
+}
+intern_multi_ptr :: #force_inline proc(arena: ^Arena, entry: $T/[^]$E) -> (out: T, err: Error) #optional_allocator_error {
+    return intern_ptr(arena, transmute(^E)entry)
+}
+intern_by_value :: proc{intern_string,intern_cstring,intern_ptr,intern_multi_ptr}
+
+intern_value :: proc(arena: ^Arena, entry: $T) -> (out: ^T, err: Error) 
+where !intrinsics.type_is_pointer(T) && !intrinsics.type_is_multi_pointer(T) && 
+      !intrinsics.type_is_string(T) && !intrinsics.type_is_array(T) && 
+      !intrinsics.type_is_slice(T) #optional_allocator_error {
+    entry := entry
+    return intern_by_value(arena, &entry)
 }
 
-immut_print :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
+clone_string :: proc(arena: ^Arena, entry: string) -> (out: string, err: Error) #optional_allocator_error {
+    return strings.clone(entry, allocator=vmem.arena_allocator(arena))
+}
+clone_cstring :: proc(arena: ^Arena, entry: cstring) -> (out: cstring, err: Error) #optional_allocator_error {
+    return cstring(raw_data(slice.clone((transmute([^]u8)entry)[:len(entry)], allocator=vmem.arena_allocator(arena)) or_return)), nil
+}
+clone_slice :: proc(arena: ^Arena, entry: $T/[]$E) -> (out: T, err: Error) #optional_allocator_error {
+    return slice.clone(entry, allocator=vmem.arena_allocator(arena))
+}
+clone_ptr :: proc(arena: ^Arena, entry: $T/^$P) -> (out: T, err: Error) #optional_allocator_error {
+    out = new(P) or_return
+    out^ = entry^
+    return out, nil
+}
+clone_multi_ptr :: #force_inline proc(arena: ^Arena, entry: $T/[^]$E) -> (out: T, err: Error) #optional_allocator_error {
+    return clone_ptr(arena, transmute(^E)entry)
+}
+clone_by_value :: proc{clone_string,clone_cstring,clone_slice,clone_ptr,clone_multi_ptr}
+
+clone_value :: proc(arena: ^Arena, entry: $T) -> (out: ^T, err: Error) 
+where !intrinsics.type_is_pointer(T) && !intrinsics.type_is_multi_pointer(T) && 
+      !intrinsics.type_is_string(T) && !intrinsics.type_is_array(T) && 
+      !intrinsics.type_is_slice(T) #optional_allocator_error {
+    entry := entry
+    return clone_by_value(arena, &entry)
+}
+
+print :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
     content := fmt.aprint(..args, sep=sep)
     defer delete(content)
-    return manage_immut(arena, content)
+    return clone_by_value(arena, content)
 }
-immut_println :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
+println :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
     content := fmt.aprintln(..args, sep=sep)
     defer delete(content)
-    return manage_immut(arena, content)
+    return clone_by_value(arena, content)
 }
-immut_printf :: proc(arena: ^Arena, fmt_: string, args: ..any, newline := false) -> (string, Error) {
+printf :: proc(arena: ^Arena, fmt_: string, args: ..any, newline := false) -> (string, Error) {
     content := fmt.aprintf(fmt_, ..args, newline=newline)
     defer delete(content)
-    return manage_immut(arena, content)
+    return clone_by_value(arena, content)
 }
-immut_printfln :: proc(arena: ^Arena, fmt_: string, args: ..any) -> (string, Error) {
+printfln :: proc(arena: ^Arena, fmt_: string, args: ..any) -> (string, Error) {
     content := fmt.aprintfln(fmt_, ..args)
     defer delete(content)
-    return manage_immut(arena, content)
-}
-iprint :: immut_print
-iprintln :: immut_println
-iprintf :: immut_printf
-iprintfln :: immut_printfln
-
-manage_mut :: proc(arena: ^Arena, value: $T) -> (out: T, err: Error) where (intrinsics.type_is_string(T) || intrinsics.type_is_pointer(T)) && (!intrinsics.type_is_slice(T)) #optional_allocator_error {
-    when T == string {
-        return strings.clone(value, allocator=mut_allocator(arena))
-    } else when T == cstring {
-        buf_size := len(value)
-        copy_buf := transmute([^]byte)mem.alloc(buf_size, allocator=mut_allocator(arena)) or_return
-        copy(copy_buf, transmute([^]byte)value, buf_size)
-        return cstring(copy_buf), nil
-    } else { // T/^P
-        return new_clone(value^, allocator=mut_allocator(arena))
-    }
-}
-manage_mut_slice :: proc(arena: ^Arena, value: $T/[]$E, $manage_elements: bool) -> (out: T, err: Error) where (intrinsics.type_is_string(E) || intrinsics.type_is_pointer(E)) && (intrinsics.type_is_slice(T)) #optional_allocator_error {
-    new_slice := make([]E, len(value), mut_allocator(arena)) or_return
-    when manage_elements {
-        for &x, i in value {
-            when intrinsics.type_is_slice(E) {
-                new_slice[i] = manage_mut_slice(arena, x, manage_elements) or_return
-            } else {
-                new_slice[i] = manage_mut(arena, x) or_return
-            }
-        }
-    } else {
-        copy(new_slice, value)
-    }
-    return new_slice, nil
+    return clone_by_value(arena, content)
 }
 
-@(require_results, no_sanitize_address)
-mut_allocator :: proc(arena: ^Arena) -> mem.Allocator { return vmem.arena_allocator(arena) }
+intern_print :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
+    content := fmt.aprint(..args, sep=sep)
+    defer delete(content)
+    return intern_by_value(arena, content)
+}
+intern_println :: proc(arena: ^Arena, args: ..any, sep := " ") -> (string, Error) {
+    content := fmt.aprintln(..args, sep=sep)
+    defer delete(content)
+    return intern_by_value(arena, content)
+}
+intern_printf :: proc(arena: ^Arena, fmt_: string, args: ..any, newline := false) -> (string, Error) {
+    content := fmt.aprintf(fmt_, ..args, newline=newline)
+    defer delete(content)
+    return intern_by_value(arena, content)
+}
+intern_printfln :: proc(arena: ^Arena, fmt_: string, args: ..any) -> (string, Error) {
+    content := fmt.aprintfln(fmt_, ..args)
+    defer delete(content)
+    return intern_by_value(arena, content)
+}
+iprint :: intern_print
+iprintln :: intern_println
+iprintf :: intern_printf
+iprintfln :: intern_printfln
 
-mut_print :: proc(arena: ^Arena, args: ..any, sep := " ") -> string {
-    return fmt.aprint(..args, sep=sep, allocator=mut_allocator(arena))
-}
-mut_println :: proc(arena: ^Arena, args: ..any, sep := " ") -> string {
-    return fmt.aprintln(..args, sep=sep, allocator=mut_allocator(arena))
-}
-mut_printf :: proc(arena: ^Arena, fmt_: string, args: ..any, newline := false) -> string {
-    return fmt.aprintf(fmt_, ..args, newline=newline, allocator=mut_allocator(arena))
-}
-mut_printfln :: proc(arena: ^Arena, fmt_: string, args: ..any) -> string {
-    return fmt.aprintfln(fmt_, ..args, allocator=mut_allocator(arena))
-}
-mprint :: mut_print
-mprintln :: mut_println
-mprintf :: mut_printf
-mprintfln :: mut_printfln
+allocator :: vmem.arena_allocator

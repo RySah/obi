@@ -14,7 +14,7 @@ as a build system integration layer.
 package obi
 
 import vs "visual_studio"
-import gc "garbage_collector"
+import ia "intern_arena"
 
 VS_Error :: vs.Error
 VS_General_Error :: vs.General_Error
@@ -88,7 +88,7 @@ vs_get_vsdevcmd_path :: proc(ctx: ^Build_Context, release: VS_Release_Info, call
     _trace()
     defer if err == nil do _backtrace()
 
-    return vs.get_vsdevcmd_path(release, gc.allocator(&ctx.garbage_collector))
+    return vs.get_vsdevcmd_path(release, ia.allocator(&ctx.intern_arena))
 }
 
 /*
@@ -108,7 +108,7 @@ vs_get_release_infos :: proc(ctx: ^Build_Context, caller_location := #caller_loc
     _trace()
     defer if err == nil do _backtrace()
 
-    return vs.get_release_infos(gc.allocator(&ctx.garbage_collector))
+    return vs.get_release_infos(ia.allocator(&ctx.intern_arena))
 }
 
 /*
@@ -159,7 +159,7 @@ vs_which :: proc(ctx: ^Build_Context, release: VS_Release_Info, name: string, cw
     _trace()
     defer if err == nil do _backtrace()
 
-    return vs.which(release, name, gc.allocator(&ctx.garbage_collector), cwd=cwd)
+    return vs.which(release, name, ia.allocator(&ctx.intern_arena), cwd=cwd)
 }
 
 /*
@@ -183,5 +183,5 @@ vs_which_b :: proc(ctx: ^Build_Context, release: VS_Release_Info, name: string, 
     _trace()
     defer if err == nil do _backtrace()
 
-    return vs.which_b(release, name, gc.allocator(&ctx.garbage_collector), cwd=cwd)
+    return vs.which_b(release, name, ia.allocator(&ctx.intern_arena), cwd=cwd)
 }

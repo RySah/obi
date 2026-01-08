@@ -48,9 +48,9 @@ Sub_Process_File :: subprocess.File
 Sub_Process_Error :: subprocess.Error
 Sub_Process_Command :: subprocess.Command
 
-import gc "garbage_collector"
-GC_Error :: gc.Error
-Garbage_Collector :: gc.Garbage_Collector
+import ia "intern_arena"
+IA_Error :: ia.Error
+Intern_Arena :: ia.Arena
 
 General_Error :: enum u8 {
     None,
@@ -211,7 +211,7 @@ Build_Context :: struct {
     // Logger
     logger: log.Logger,
     // Garbage collector for owned resources
-    garbage_collector: Garbage_Collector,
+    intern_arena: Intern_Arena,
     // The cache file system.
     cache_file_system: Cache_File_System,
     // Default parent directory for C imports.  
@@ -374,7 +374,7 @@ create_build_logger :: #force_inline proc(ctx: ^Build_Context, subdomain := "", 
     return log.create_console_logger(
         lowest=lowest, 
         opt=opt, 
-        ident=len(subdomain) > 0 ? strings.concatenate({ "build-", subdomain }, gc.allocator(&ctx.garbage_collector)) or_return : "build", 
+        ident=len(subdomain) > 0 ? strings.concatenate({ "build-", subdomain }, ia.allocator(&ctx.intern_arena)) or_return : "build", 
         allocator=ctx.allocator
     ), nil
 }
@@ -422,12 +422,12 @@ create_build_context :: proc(
         return ctx, General_Error.Failed_To_Parse_User_Args
 	}
 
-    gc.init_growing(&ctx.garbage_collector) or_return
+    ia.init_growing(&ctx.intern_arena, ctx.allocator) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_export_path = c_export_path
     ctx.stdout = subprocess.stdout()
     ctx.stderr = subprocess.stderr()
-    ctx.working_dir = ta_os2_get_working_directory(gc.allocator(&ctx.garbage_collector)) or_return
+    ctx.working_dir = ta_os2_get_working_directory(ia.allocator(&ctx.intern_arena)) or_return
     ctx.state_fingerprint=Default_State_Hasher
     when ODIN_OS == .Windows {
         vs_err: VS_Error
@@ -475,7 +475,7 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     log.debugf("[DONE] Destroying build context step collection.")
 
     log.debugf("[START] Destroying build context garbage collector.")
-    gc.destroy(&ctx.garbage_collector)
+    ia.destroy(&ctx.intern_arena) or_return
     log.debugf("[DONE] Destroying build context garbage collector.")
 
     log.infof("[DONE] Destroying build context.")
@@ -574,11 +574,13 @@ subprocess_to_step :: proc(ctx: ^Build_Context, cmd: ^Sub_Process_Command, calle
     _trace()
     defer if err == nil do _backtrace()
     
-    owned_cmd := gc.manage_mut(&ctx.garbage_collector, cmd) or_return
-    owned_cmd.working_dir = gc.manage_immut(&ctx.garbage_collector, cmd.working_dir) or_return
-    owned_cmd.command = gc.manage_immut_slice(&ctx.garbage_collector, cmd.command, true) or_return
+    owned_cmd := ia.clone_ptr(&ctx.intern_arena, cmd) or_return
+    owned_cmd.working_dir = ia.intern_string(&ctx.intern_arena, cmd.working_dir) or_return
+    owned_cmd.command = ia.clone_slice(&ctx.intern_arena, cmd.command) or_return
+    for &token, i in cmd.command do owned_cmd.command[i] = ia.intern_string(&ctx.intern_arena, token) or_return
     if env, env_exists := cmd.env.?; env_exists {
-        owned_cmd.env = gc.manage_immut_slice(&ctx.garbage_collector, env, true) or_return
+        owned_cmd.env = ia.clone_slice(&ctx.intern_arena, env) or_return
+        for &token, i in env do owned_cmd.env.?[i] = ia.intern_string(&ctx.intern_arena, token) or_return
     }
     step = create_step(ctx) or_return
     step.client_data = owned_cmd
@@ -919,17 +921,17 @@ c_import :: proc(
     _trace()
     defer if err == nil do _backtrace()
 
-    info = new(C_Import_Info, gc.allocator(&ctx.garbage_collector))    
+    info = new(C_Import_Info, ia.allocator(&ctx.intern_arena))    
     info.factory = bindgen.make_factory(ctx.allocator) or_return
     info.path = path
     info.emit_options = emit_options
-    type_aliases := cbindgen.make_type_aliases(allocator=gc.allocator(&ctx.garbage_collector)) or_return
+    type_aliases := cbindgen.make_type_aliases(allocator=ia.allocator(&ctx.intern_arena)) or_return
     info.parser_options.keep_stdlib = true
     info.parser_options.type_aliases = type_aliases
     info.parser_options.discard_comments = false
     info.parser_options.extra_imports = make(map[string]string, ctx.allocator)
     info.parser_options.opaque_type_name = nil // Auto-generated
-    info.output_directory = filepath.join({ ctx.c_export_path, info.emit_options.package_name }, gc.allocator(&ctx.garbage_collector)) or_return
+    info.output_directory = filepath.join({ ctx.c_export_path, info.emit_options.package_name }, ia.allocator(&ctx.intern_arena)) or_return
     return info, nil
 }
 
@@ -977,7 +979,7 @@ c_import_info_to_step :: proc(ctx: ^Build_Context, info: ^C_Import_Info, caller_
         ctx=ctx
     }
     step = create_step(ctx) or_return
-    step.client_data = _manage_mem(ctx, &client_data) or_return
+    step.client_data = ia.intern_value(&ctx.intern_arena, client_data) or_return
     step.procedure = proc(ctx: ^Build_Context, client_data: rawptr) -> (success: bool, err: Error) {
         ciicd := transmute(^_C_Bindgen_Info_Client_Data)client_data
         c_import_info(ciicd.ctx, ciicd.info) or_return
@@ -1015,7 +1017,7 @@ create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller
     _trace()
     defer if err == nil do _backtrace()
 
-    step = new(Step, gc.mut_allocator(&ctx.garbage_collector)) or_return
+    step = new(Step, ia.allocator(&ctx.intern_arena)) or_return
     step.children = make([dynamic]^Step, ctx.allocator) or_return
     //append(&ctx._internal.step_collection, step) or_return
     return step, nil
@@ -1062,8 +1064,8 @@ merge_steps :: proc(ctx: ^Build_Context, steps: ..^Step, caller_location := #cal
     _trace()
     defer if err == nil do _backtrace()
 
-    owned_steps := gc.manage_immut_slice(&ctx.garbage_collector, steps, false) or_return
-    owned_steps_ptr := gc.manage_immut(&ctx.garbage_collector, &owned_steps) or_return
+    owned_steps := ia.clone_slice(&ctx.intern_arena, steps) or_return
+    owned_steps_ptr := ia.clone_ptr(&ctx.intern_arena, &owned_steps) or_return
 
     step = create_step(ctx) or_return
     step.client_data = owned_steps_ptr
@@ -1140,8 +1142,8 @@ fingerprint :: proc(ctx: ^Build_Context, targets: ..Hasher, caller_location := #
     defer if failed do log.errorf("[ERROR] Creating fingerprint for targets.")
     when VERBOSE do log.debug(targets)
 
-    managed_targets := _manage_mem(ctx, targets) or_return
-    managed_targets_ptr := _manage_mem(ctx, &managed_targets) or_return
+    managed_targets := ia.clone_slice(&ctx.intern_arena, targets) or_return
+    managed_targets_ptr := ia.clone_ptr(&ctx.intern_arena, &managed_targets) or_return
 
     failed = false
 
@@ -1266,8 +1268,8 @@ files_fingerprint :: proc(
                                         continue
                                     }
                                 }
-                                managed_fullpath := _manage_mem(ctx, info.fullpath) or_return
-                                managed_fullpath_ptr := _manage_mem(ctx, &managed_fullpath) or_return
+                                managed_fullpath := ia.intern_string(&ctx.intern_arena, info.fullpath) or_return
+                                managed_fullpath_ptr := ia.clone_ptr(&ctx.intern_arena, &managed_fullpath) or_return
                                 append(&sanitized_targets, Hasher{
                                     procedure=proc(client_data: rawptr) -> u64 {
                                         path_ptr := transmute(^string)client_data
@@ -1323,8 +1325,8 @@ files_fingerprint :: proc(
                                 continue
                             }
                         }
-                        managed_target := _manage_mem(ctx, target) or_return
-                        managed_target_ptr := _manage_mem(ctx, &managed_target) or_return
+                        managed_target := ia.intern_string(&ctx.intern_arena, target) or_return
+                        managed_target_ptr := ia.clone_ptr(&ctx.intern_arena, &managed_target) or_return
                         append(&sanitized_targets, Hasher{
                             procedure=proc(client_data: rawptr) -> u64 {
                                 path_ptr := transmute(^string)client_data
@@ -1445,8 +1447,8 @@ files_fingerprint :: proc(
                                         }
                                     }
                                     sync.mutex_lock(&data.ctx.mutex)
-                                    managed_target := _manage_mem(data.ctx.data, info.fullpath)
-                                    managed_target_ptr := _manage_mem(data.ctx.data, &managed_target)
+                                    managed_target := ia.intern_string(&data.ctx.data.intern_arena, info.fullpath)
+                                    managed_target_ptr := ia.clone_ptr(&data.ctx.data.intern_arena, &managed_target)
                                     sync.mutex_unlock(&data.ctx.mutex)
                                     thread_safe_array.read_write_lock(data.sanitized_targets)
                                     append(data.sanitized_targets.buffer, Hasher{
@@ -1500,8 +1502,8 @@ files_fingerprint :: proc(
                             }
                         }
                         sync.mutex_lock(&data.ctx.mutex)
-                        managed_target := _manage_mem(data.ctx.data, target)
-                        managed_target_ptr := _manage_mem(data.ctx.data, &managed_target)
+                        managed_target := ia.intern_string(&data.ctx.data.intern_arena, target)
+                        managed_target_ptr := ia.clone_ptr(&data.ctx.data.intern_arena, &managed_target)
                         sync.mutex_unlock(&data.ctx.mutex)
                         thread_safe_array.read_write_lock(data.sanitized_targets)
                         append(data.sanitized_targets.buffer, Hasher{
