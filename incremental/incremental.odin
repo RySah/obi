@@ -2,7 +2,6 @@ package incremental
 
 import "core:os/os2"
 import "core:path/filepath"
-import "../thread_safe/allocator"
 import ia "../intern_arena"
 
 Error :: ia.Error
