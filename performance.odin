@@ -122,21 +122,21 @@ performance_tracker_sbprint :: proc(
     track: ^Performance_Tracker,
     memory_leak_slice_capacity: Maybe(int) = 0
 ) -> string {
-    _bytes_to_kib_kb_mib_mb :: proc(count: f64) -> (kib: f64, kb: f64, mib: f64, mb: f64) {
-        KIB := 1024.0
-        MIB := 1024.0 * 1024.0
-        KB := 1000.0
-        MB := 1000.0 * 1000.0
+    // _bytes_to_kib_kb_mib_mb :: proc(count: f64) -> (kib: f64, kb: f64, mib: f64, mb: f64) {
+    //     KIB := 1024.0
+    //     MIB := 1024.0 * 1024.0
+    //     KB := 1000.0
+    //     MB := 1000.0 * 1000.0
 
-        bytes := f64(count)
+    //     bytes := f64(count)
 
-        kib = bytes / KIB
-        kb = bytes / KB
-        mib = bytes / MIB
-        mb = bytes / MB
+    //     kib = bytes / KIB
+    //     kb = bytes / KB
+    //     mib = bytes / MIB
+    //     mb = bytes / MB
 
-        return
-    }
+    //     return
+    // }
 
     {
         kib, kb, mib, mb: f64
@@ -145,28 +145,31 @@ performance_tracker_sbprint :: proc(
         fmt.sbprintfln(buf, "Duration:           %v", track.duration)
         fmt.sbprintfln(buf, "")
         fmt.sbprintfln(buf, "Memory Usage:")
-        kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.current_memory_allocated))
-        fmt.sbprintfln(buf, "  Current:          %db %fkib %fkb %fmib %fmb", 
-            track.memory_tracker.current_memory_allocated,
-            kib, kb, mib, mb 
-        )
-        kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.peak_memory_allocated))
-        fmt.sbprintfln(buf, "  Peak:             %db %fkib %fkb %fmib %fmb", 
-            track.memory_tracker.peak_memory_allocated,
-            kib, kb, mib, mb 
-        )
-        kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.total_memory_allocated))
-        fmt.sbprintfln(buf, "  Total:            %db %fkib %fkb %fmib %fmb", 
-            track.memory_tracker.total_memory_allocated,
-            kib, kb, mib, mb 
-        )
-        kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.total_memory_freed))
-        fmt.sbprintfln(buf, "  Freed:            %db %fkib %fkb %fmib %fmb",
-            track.memory_tracker.total_memory_freed,
-            kib, kb, mib, mb
-        )
+        // kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.current_memory_allocated))
+        // fmt.sbprintfln(buf, "  Current:          %db %fkib %fkb %fmib %fmb", 
+        //     track.memory_tracker.current_memory_allocated,
+        //     kib, kb, mib, mb 
+        // )
+        // kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.peak_memory_allocated))
+        // fmt.sbprintfln(buf, "  Peak:             %db %fkib %fkb %fmib %fmb", 
+        //     track.memory_tracker.peak_memory_allocated,
+        //     kib, kb, mib, mb 
+        // )
+        // kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.total_memory_allocated))
+        // fmt.sbprintfln(buf, "  Total:            %db %fkib %fkb %fmib %fmb", 
+        //     track.memory_tracker.total_memory_allocated,
+        //     kib, kb, mib, mb 
+        // )
+        // kib, kb, mib, mb = _bytes_to_kib_kb_mib_mb(f64(track.memory_tracker.total_memory_freed))
+        // fmt.sbprintfln(buf, "  Freed:            %db %fkib %fkb %fmib %fmb",
+        //     track.memory_tracker.total_memory_freed,
+        //     kib, kb, mib, mb
+        // )
+        fmt.sbprintfln(buf, "  Current:          %#m", track.memory_tracker.current_memory_allocated)
+        fmt.sbprintfln(buf, "  Peak:             %#m", track.memory_tracker.peak_memory_allocated)
+        fmt.sbprintfln(buf, "  Total:            %#m", track.memory_tracker.total_memory_allocated)
+        fmt.sbprintfln(buf, "  Freed:            %#m", track.memory_tracker.total_memory_freed)
         fmt.sbprintfln(buf, "")
-        //fmt.sbprintfln(buf, "Allocation Info:")
         fmt.sbprintfln(buf, "Allocation Count: %d", track.memory_tracker.total_allocation_count)
         fmt.sbprintfln(buf, "Free Count:       %d", track.memory_tracker.total_free_count)
     }
