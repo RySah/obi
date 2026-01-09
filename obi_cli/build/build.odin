@@ -5,7 +5,7 @@ import "core:mem"
 import obi "../.."
 import subprocess "../../subprocess"
 
-build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
+build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
     when ODIN_DEBUG {
         track: obi.Performance_Tracker
 
@@ -15,20 +15,23 @@ build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
         obi.performance_tracker_start(&track)
         defer {
             obi.performance_tracker_end(&track)
-            obi.performance_tracker_eprint(&track, memory_slice_capacity=nil)
+            obi.performance_tracker_eprint(&track, memory_leak_slice_capacity=nil)
             obi.performance_tracker_destroy(&track)
         }
     }
 
     ctx = obi.create_build_context(user_args, is_main=true) or_return
+    defer obi.destroy_build_context(&ctx) 
+    
     ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
     defer obi.destroy_build_logger(&ctx, ctx.logger)
 
-    build_step, run_step: Maybe(obi.Step)
+    build_step, run_step: ^obi.Step
     build_step = obi.odin_default_build_step(&ctx, planned=true) or_return
     run_step = obi.odin_default_run_step(&ctx, planned=true) or_return
 
     // --- C IMPORT ARGS 3.3.0 ---
+    libargs3_step: ^obi.Step
     {
         make_cmd := obi.Make{
             compatibility={.MingW32,.GNU},
@@ -36,7 +39,8 @@ build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
             extra_flags={ "libs" }
         }
         make_step := obi.to_step(&ctx, &make_cmd) or_return
-        make_step.name = "build args-3.3.0"
+        make_step.name = "make-c-args-3.3.0"
+        obi.add_step(&ctx, make_step) or_return
 
         api_import_info := obi.c_import(
             &ctx, 
@@ -54,7 +58,8 @@ build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
             }
         ) or_return
         api_import_step := obi.to_step(&ctx, api_import_info) or_return
-        api_import_step.name = "import args-3.3.0 api"
+        api_import_step.name = "import-c-args-3.3.0"
+        obi.add_step(&ctx, api_import_step) or_return
 
         libargs_step := obi.merge_steps(&ctx,
             make_step,
@@ -68,39 +73,24 @@ build :: proc(user_args: []string) -> (ctx: obi.Build_Context, err: obi.Error) {
             ) or_return,
             libargs_step
         ) or_return
+        planned_libargs_step.name = "build-libargs3"
 
         obi.add_step(&ctx, 
-            planned_libargs_step.? or_else obi.Empty_Step
+            planned_libargs_step
         ) or_return
+
+        libargs3_step = planned_libargs_step
     }
     // ---------------------------
     
-    // --- BUILD STEP ---
-    {
-        build_cmd := obi.Odin_Build{
-            mode=.Executable,
-            path=obi.Odin_Build_Dir_Path("."),
-            extra_flags={}
-        }
-        build_step := obi.to_step(&ctx, &build_cmd) or_return
-        build_step.name = "build obi_cli"
+    obi.add_child(build_step, libargs3_step) or_return
+    obi.add_child(run_step, libargs3_step) or_return
 
-        planned_build_step := obi.plan_step(&ctx,
-            obi.files_fingerprint(&ctx, ".", "third_party", 
-                dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
-                file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
-            ) or_return,
-            build_step
-        ) or_return
+    obi.add_step(&ctx, build_step) or_return
+    obi.add_step(&ctx, run_step) or_return
 
-        obi.add_step(&ctx, 
-            planned_build_step.? or_else obi.Empty_Step
-        ) or_return
-    }   
-    // ------------------
+    obi.build(&ctx) or_return
 
-    obi.build(&ctx, obi.user_args(), ) or_return
-    
     return ctx, nil
 }
 
@@ -112,7 +102,8 @@ main :: proc() {
     fmt.assertf(err == nil, "build initiation failed. (%v)", err)
     defer obi.deinit()
 
-    build_ctx, err = build()
+    //build_ctx, err = build(obi.user_args())
+    build_ctx, err = build("build")
     fmt.assertf(err == nil, "build failed. (%v)\nTRACEBACK:\n%s\n", err, obi.blame(&build_ctx, err, allow_newlines=true))
     
 }

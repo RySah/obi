@@ -426,11 +426,13 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
     log.debugf("[DONE] Destroying build context file system.")
 
     log.debugf("[START] Destroying build context step collection.")
-    for &step in ctx._internal.step_collection {
+    _traverse_steps(ctx._internal.step_collection[:], nil, proc(step: ^Step, _: rawptr) -> ^Step {
         if step.children != nil {
-            delete(step.children) or_return
+            delete(step.children)
+            step.children = nil
         }
-    }
+        return nil
+    })
     delete(ctx._internal.step_collection) or_return
     log.debugf("[DONE] Destroying build context step collection.")
 
@@ -811,6 +813,37 @@ user_args :: proc() -> []string {
     return os.args[1:]
 }
 
+@private _traverse_steps :: proc(steps: []^Step, client_data: rawptr, p: #type proc(^Step, rawptr) -> ^Step) -> (res: ^Step) {
+    stack := make([dynamic]^Step, 0, len(steps))
+    defer delete(stack)
+
+    for &s in steps do append(&stack, s)
+
+    visited := make(map[^Step]bool)
+    defer delete(visited)
+
+    for len(stack) > 0 {
+        step := stack[len(stack)-1]
+        pop(&stack)
+
+        if visited[step] {
+            continue
+        }
+        visited[step] = true
+
+        if step.children != nil {
+            for &child in step.children {
+                append(&stack, child)
+            }
+        }
+
+        res = p(step, client_data)
+        if res != nil do return res
+    }
+
+    return nil
+}
+
 /* Use the `Build_Context` to build the respective project.
 */
 build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err: Error) {
@@ -825,27 +858,15 @@ build :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (err:
     defer if err != nil do log.errorf("[FAIL] Building.")
 
     _find_step_target :: proc(target: string, steps: []^Step) -> ^Step {
-        stack := make([dynamic]^Step, 0, len(steps))
-        defer delete(stack)
-
-        for &s in steps do append(&stack, s)
-
-        for len(stack) > 0 {
-            step := stack[len(stack)-1]
-            pop_front(&stack)
-
-            if step.name == target {
-                return step
-            }
-
-            if step.children != nil {
-                for &child in step.children {
-                    append(&stack, child)
-                }
-            }
-        }
-
-        return nil
+        target := target
+        return _traverse_steps(
+            steps, 
+            &target, 
+            proc(step: ^Step, client_data: rawptr) -> ^Step {   
+                target_ptr := transmute(^string)client_data
+                if step.name == target_ptr^ do return step
+                return nil
+            })
     }
 
     step_name := get_target_step_name(ctx)
@@ -1049,7 +1070,7 @@ add_child :: proc(parent: ^Step, children: ..^Step, caller_location := #caller_l
     _trace()
     defer if err == nil do _backtrace()
 
-    append(&parent.children, ..children) or_return
+    append(&parent.children, ..children, loc=caller_location) or_return
     return nil
 }
 

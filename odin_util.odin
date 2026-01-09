@@ -204,11 +204,12 @@ odin_default_build_step :: proc(
         extra_flags=extra_flags
     }
     step = to_step(ctx, &cmd) or_return
+    step.name = "build"
 
     if planned {
         step = plan_step(
             ctx,
-            files_fingerprint(ctx, ".", "third_party", 
+            files_fingerprint(ctx, ".", 
                 dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
                 file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
             ) or_return,
@@ -235,11 +236,12 @@ odin_default_run_step :: proc(
         extra_flags=extra_flags
     }
     step = to_step(ctx, &cmd) or_return
+    step.name = "run"
 
     if planned {
         step = plan_step(
             ctx,
-            files_fingerprint(ctx, ".", "third_party", 
+            files_fingerprint(ctx, ".", 
                 dir_glob_patterns={ include={ "*" }, exclude={ctx.cache_file_system.path} },
                 file_glob_patterns={ include={ "*.odin", "*.sjson" }, exclude={} }
             ) or_return,

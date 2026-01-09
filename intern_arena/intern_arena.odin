@@ -15,18 +15,19 @@ Intern_Entry :: struct { data: rawptr, size: int }
 
 Intern_Pool :: struct {
     buckets: map[u32][dynamic]Intern_Entry,
-    data_allocator: mem.Allocator
+    data_allocator: mem.Allocator,
+    backing_allocator: mem.Allocator
 }
 
 intern_pool_destroy :: proc(m: ^Intern_Pool) -> Error {
     data_allocator_feat := mem.query_features(m.data_allocator)
-    for h, values in m.buckets {
+    for h, &bucket in m.buckets {
         if .Free in data_allocator_feat {
-            for &value in values {
+            for &value in bucket {
                 delete((transmute([^]byte)value.data)[:value.size], allocator=m.data_allocator) or_return
             }
         }
-        delete(values)
+        delete(bucket) or_return
     }
     delete(m.buckets) or_return
     return nil
@@ -36,6 +37,7 @@ intern_pool_init :: proc(m: ^Intern_Pool, data_allocator: mem.Allocator, allocat
     context.allocator = allocator
     m.buckets = make(map[u32][dynamic]Intern_Entry) 
     m.data_allocator = data_allocator
+    m.backing_allocator = allocator
 }
 
 intern_pool_add_value :: proc(m: ^Intern_Pool, v: Intern_Entry) -> (out: Intern_Entry, err: Error) #optional_allocator_error {
@@ -58,7 +60,7 @@ intern_pool_add_value :: proc(m: ^Intern_Pool, v: Intern_Entry) -> (out: Intern_
     if bucket_exists {
         append(bucket, out) or_return
     } else {
-        new_bucket := make([dynamic]Intern_Entry, m.buckets.allocator) or_return
+        new_bucket := make([dynamic]Intern_Entry, m.backing_allocator) or_return
         append(&new_bucket, out) or_return
         m.buckets[h] = new_bucket
     }
@@ -135,9 +137,9 @@ init_buffer :: proc(
 }
 
 destroy :: proc(arena: ^Arena) -> Error {
-    vmem.arena_destroy(arena)
     for _, &intern in arena.intern_pools do intern_pool_destroy(&intern) or_return
     delete(arena.intern_pools) or_return
+    vmem.arena_destroy(arena)
     return nil
 }
 
@@ -197,7 +199,7 @@ clone_slice :: proc(arena: ^Arena, entry: $T/[]$E) -> (out: T, err: Error) #opti
     return slice.clone(entry, allocator=vmem.arena_allocator(arena))
 }
 clone_ptr :: proc(arena: ^Arena, entry: $T/^$P) -> (out: T, err: Error) #optional_allocator_error {
-    out = new(P) or_return
+    out = new(P, allocator=vmem.arena_allocator(arena)) or_return
     out^ = entry^
     return out, nil
 }
