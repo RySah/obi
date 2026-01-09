@@ -92,6 +92,14 @@ typedef struct EQ_Event
     } payload;
 } EQ_Event;
 
+typedef struct EQ_OptionSet {
+    uint8_t read : 1;
+    uint8_t write : 5;
+    uint16_t read_write_range;
+    uint32_t try_truncate : 3;
+    uint32_t full_truncate : 12;
+} EQ_Options;
+
 /* ===========================
    API functions
    =========================== */

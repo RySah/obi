@@ -244,6 +244,12 @@ getNumArgTypes :: proc(T: Type) -> int { return cast(int)clang.getNumArgTypes(T)
 getArgType :: proc(T: Type, i: uint, sm: ^String_Manager) -> Type {
     return asThisType(clang.getArgType(T, cast(c.uint)i), sm)
 }
+Cursor_isBitField :: proc(C: Cursor) -> bool {
+    return clang.Cursor_isBitField(C) != 0
+}
+getFieldDeclBitWidth :: proc(C: Cursor) -> int {
+    return cast(int)clang.getFieldDeclBitWidth(C)
+}
 
 @private _spelling_to_ident :: proc(spelling: string, allocator := context.allocator) -> (result: string, err: mem.Allocator_Error) #optional_allocator_error {
     if strings.has_prefix(spelling, "struct ") {

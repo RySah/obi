@@ -519,16 +519,28 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 fields=make([dynamic]gb.Name_Type_Field, gb.decl_factory_allocator(&factory.decls)) or_return
             }
 
+            _Bitfield_Run :: struct {
+                range: [2]u16,
+                total_width: int
+            }
+
             _Fields_Client_Data :: struct {
                 factory: ^gb.Factory,
-                fields: ^[dynamic]gb.Name_Type_Field
+                fields: ^[dynamic]gb.Name_Type_Field,
+                bitfield_runs: ^[dynamic]_Bitfield_Run,
+                field_i: u16
             }
 
             type := cu.getCursorType(cursor, sm)
 
+            bitfield_runs := make([dynamic]_Bitfield_Run) or_return
+            defer delete(bitfield_runs)
+
             fields_client_data := _Fields_Client_Data{
                 factory=factory,
-                fields=&info.fields
+                fields=&info.fields,
+                bitfield_runs=&bitfield_runs,
+                field_i=0
             }
             cu.visitChildren(
                 cursor,
@@ -536,10 +548,34 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                     client_data := transmute(^_Fields_Client_Data)client_data
                     factory: ^gb.Factory = client_data.factory
                     fields: ^[dynamic]gb.Name_Type_Field = client_data.fields
+                    bitfield_runs: ^[dynamic]_Bitfield_Run = client_data.bitfield_runs
 
                     kind := cu.getCursorKind(cursor)
                     #partial switch kind {
                         case .FieldDecl:
+                            if cu.Cursor_isBitField(cursor) {
+                                if len(bitfield_runs) > 0 {
+                                    if bitfield_runs[len(bitfield_runs)-1].range.y + 1 == client_data.field_i {
+                                        bitfield_runs[len(bitfield_runs)-1].range.y += 1
+                                        bitfield_runs[len(bitfield_runs)-1].total_width += cu.getFieldDeclBitWidth(cursor)
+                                    } else {
+                                        append(bitfield_runs,
+                                            _Bitfield_Run{
+                                                range=[2]u16{ client_data.field_i, client_data.field_i },
+                                                total_width=cu.getFieldDeclBitWidth(cursor)
+                                            }
+                                        ) or_return
+                                    }
+                                } else {
+                                    append(bitfield_runs,
+                                        _Bitfield_Run{
+                                            range=[2]u16{ client_data.field_i, client_data.field_i },
+                                            total_width=cu.getFieldDeclBitWidth(cursor)
+                                        }
+                                    ) or_return
+                                }
+                            }
+
                             ntf: gb.Name_Type_Field
                             ntf.name = strings.clone(cursor.ident, gb.decl_factory_allocator(&factory.decls)) or_return
                             type := cu.getCursorType(cursor, sm)
@@ -547,6 +583,8 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                             ntf.type = resolve_decl(factory, type, sm) or_return
                             log.infof("Parsed record field declaration: %v", ntf)
                             append(fields, ntf) or_return
+
+                            client_data.field_i += 1
                         
                         case .TypedefDecl: fallthrough
                         case .StructDecl: fallthrough
@@ -569,6 +607,41 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 &fields_client_data,
                 options=DEFAULT_VISITOR_OPTIONS
             )
+
+            if len(bitfield_runs) > 0 {
+                // NOTE(rysah): Assuming odin still uses llvm as its backend we'll handle bit field storage units specified by this documentation "https://clang.llvm.org/doxygen/structclang_1_1CodeGen_1_1CGBitFieldInfo.html#details"
+                byte_decl := gb.make_decl(&factory.decls) or_return
+                byte_decl.variant = gb.Type_Decl{
+                    name="byte",
+                    info=gb.as_builtin_info_comptime(byte),
+                    size=size_of(byte),
+                    alignment=align_of(byte)
+                }
+
+                cutoff_i := len(info.fields)
+
+                range_handled := false
+
+                field_loop: for &field, i in info.fields[:] {
+                    for &run in bitfield_runs {
+                        if i >= cast(int)run.range.x && i <= cast(int)run.range.y && !range_handled { // Field is a bitfield and unhandled
+                            storage_unit_byte_count := (run.total_width + 7) / 8 // e.g. (1+7)/8=1, (9+7)/8=2
+                            storage_unit_decl := gb.make_decl(&factory.decls) or_return
+                            storage_unit_decl.variant = gb.Constant_Array_Decl{
+                                elem_count=storage_unit_byte_count,
+                                underlying=byte_decl
+                            }
+                            append(&info.fields, gb.Name_Type_Field{ name="_", type=storage_unit_decl }) or_return
+                            range_handled = true
+                            continue field_loop // Going to the next field
+                        }
+                    }
+                    range_handled = false
+                    append(&info.fields, field) or_return
+                }
+
+                remove_range(&info.fields, 0, cutoff_i)
+            }
             
             out_decl := gb.make_decl(&factory.decls) or_return
             if kind == .UnionDecl {
