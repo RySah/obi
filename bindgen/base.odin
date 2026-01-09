@@ -182,13 +182,19 @@ Decl_Privacy :: enum u8 {
     File_Private
 }
 
+Constant_Array_Decl :: struct {
+    elem_count: int,
+    underlying: ^Decl
+}
+
 Decl :: struct {
     variant: union {
         Type_Decl,
         Func_Decl,
         Alias_Decl,
         Pointer_Decl,
-        Unknown_Alias_Decl
+        Unknown_Alias_Decl,
+        Constant_Array_Decl
     },
     comment: Maybe(string),
     privacy: Decl_Privacy
@@ -253,10 +259,11 @@ get_name :: proc(decl: ^Decl) -> string {
         case Alias_Decl:
             return internal.name
         case Pointer_Decl:
-            //return "/*pointer*/" // Should be unknown.
             return get_name(internal.underlying)
         case Unknown_Alias_Decl:
             return internal.name
+        case Constant_Array_Decl:
+            return get_name(internal.underlying)
     }
     return ""
 }
@@ -346,6 +353,8 @@ get_size :: proc(decl: ^Decl) -> int {
             return size_of(uintptr)
         case Alias_Decl:
             return get_size(internal.underlying)
+        case Constant_Array_Decl:
+            return get_size(internal.underlying)*internal.elem_count
     }
     unimplemented()
 }
@@ -360,6 +369,8 @@ get_align :: proc(decl: ^Decl) -> int {
         case Pointer_Decl:
             return align_of(uintptr)
         case Alias_Decl:
+            return get_align(internal.underlying)
+        case Constant_Array_Decl:
             return get_align(internal.underlying)
     }
     unimplemented()
@@ -480,14 +491,16 @@ emit_factory_decls :: proc(factory: ^Decl_Factory, sb: ^strings.Builder, emit_op
             } else if builtin_info.id == typeid_of(c_char_s) {
                 return strings.clone("c.char")
             }
-            // } else {
-            //     return strings.clone(get_name(decl))
-            // }
         }
         if type_decl, is_type_decl := decl.variant.(Type_Decl); is_type_decl {
             if builtin_info, is_builtin_info := type_decl.info.(Builtin_Info); is_builtin_info {
                 return strings.clone(type_decl.name)
             }
+        }
+        if constant_array_decl, is_constant_array_decl := decl.variant.(Constant_Array_Decl); is_constant_array_decl {
+            underlying_name := eval_type_name(constant_array_decl.underlying, out_case) or_return
+            defer delete(underlying_name)
+            return fmt.aprintf("[%d]%s", constant_array_decl.elem_count, underlying_name), nil
         }
         if unknown_alias_ptr := get_unknown_alias(decl, shallow=true); unknown_alias_ptr != nil {
             return strings.clone(unknown_alias_ptr.name)
@@ -580,29 +593,15 @@ emit_factory_decls :: proc(factory: ^Decl_Factory, sb: ^strings.Builder, emit_op
                         }
                         strings.write_string(sb, "\n")
                 }
-                // if !is_builtin {
-                //     decl_name := get_name_w_case(decl, emit_info.cases[.Type])
-                //     defer delete(decl_name)
-                //     fmt.sbprintfln(
-                //         sb, 
-                //         "#assert(size_of(%s) == %d, \"binding size for type `%s` appears to be incorrect.\")",
-                //         decl_name, get_size(decl), decl_name
-                //     )
-                //     fmt.sbprintfln(
-                //         sb, 
-                //         "#assert(align_of(%s) == %d, \"binding alignment for type `%s` appears to be incorrect.\")",
-                //         decl_name, get_align(decl), decl_name
-                //     )
-                // }
             case Pointer_Decl:
                 // Nothing to print for pointer
+            case Constant_Array_Decl:
+                // Nothing to print for constant array
             case Alias_Decl:
                 if comment, ok := decl.comment.?; ok do fmt.sbprintfln(sb, "%s", comment)
                 underlying_type_name := eval_type_name(internal.underlying, emit_opts.cases[.Type])
                 defer delete(underlying_type_name)
-                /*if p := get_builtin(internal.underlying); p != nil {
-                    fmt.sbprintfln(sb, "%s :: %s", internal.name, underlying_type_name)
-                } else*/ if p := get_unknown_alias(internal.underlying); p != nil {
+                if p := get_unknown_alias(internal.underlying); p != nil {
                     fmt.sbprintfln(sb, "%s :: %s", internal.name, underlying_type_name)
                 } else {
                     name := parse_w_case(internal.name, emit_opts.cases[.Type])

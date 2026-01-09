@@ -368,6 +368,16 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
             // out_decl.privacy = .File_Private
             return out_decl, nil
         } else do return nil, nil
+    } else if T.kind == .ConstantArray {
+        elem_type := cu.getArrayElementType(T, sm)
+        elem_decl := resolve_decl(factory, elem_type, sm) or_return
+        if elem_decl == nil do return nil, nil
+        out_decl = gb.make_decl(&factory.decls) or_return
+        out_decl.variant = gb.Constant_Array_Decl {
+            underlying=elem_decl,
+            elem_count=cast(int)clang.getArraySize(T)
+        }
+        return out_decl, nil
     } else {
         decl_cursor := cu.getTypeDeclaration(T, sm)
         log.infof("Falling back to visit type declaration... %v", decl_cursor)
@@ -904,6 +914,8 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                         _append_tree(out, internal.underlying)
                     case gb.Unknown_Alias_Decl:
                         // Nothing to append
+                    case gb.Constant_Array_Decl:
+                        _append_tree(out, internal.underlying)
                 }
                 append(out, decl)
             }

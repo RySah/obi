@@ -223,6 +223,12 @@ getEnumIntegerType :: proc(C: Cursor, sm: ^String_Manager) -> Type {
 getElementType :: proc(T: Type, sm: ^String_Manager) -> Type {
     return asThisType(clang.getElementType(T), sm)
 }
+getArrayElementType :: proc(T: Type, sm: ^String_Manager) -> Type {
+    return asThisType(clang.getArrayElementType(T), sm)
+}
+getArraySize :: proc(T: Type) -> u64 {
+    return cast(u64)clang.getArraySize(T)
+}
 hashCursor :: proc "c" (C: Cursor) -> uint {
     return cast(uint)clang.hashCursor(C)
 }

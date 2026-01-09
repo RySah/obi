@@ -50,6 +50,7 @@ typedef enum EQ_EventType {
 typedef struct EQ_EventMessage {
     const char* data;
     size_t length;
+    uint8_t keys[8];
 } EQ_EventMessage;
 
 typedef struct EQ_UnknownEventMessage {
@@ -99,7 +100,7 @@ typedef struct EQ_Event
 EQ_Queue *eq_queue_create(size_t capacity, int(*cb)(int, int));
 
 /* Destroy a queue created with eq_queue_create */
-void eq_queue_destroy(EQ_Queue *queue);
+void eq_queue_destroy(EQ_Queue *queue, char some_bytes[52]);
 
 /* Push an event into the queue */
 EQ_Result eq_queue_push(EQ_Queue *queue, const EQ_Event *event);
