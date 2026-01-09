@@ -166,11 +166,11 @@ performance_tracker_sbprint :: proc(
             kib, kb, mib, mb
         )
         fmt.sbprintfln(buf, "")
-        fmt.sbprintfln(buf, "Allocation behavior:")
-        fmt.sbprintfln(buf, "  Allocation Count: %d", track.memory_tracker.total_allocation_count)
-        fmt.sbprintfln(buf, "  Free Count:       %d", track.memory_tracker.total_free_count)
+        //fmt.sbprintfln(buf, "Allocation Info:")
+        fmt.sbprintfln(buf, "Allocation Count: %d", track.memory_tracker.total_allocation_count)
+        fmt.sbprintfln(buf, "Free Count:       %d", track.memory_tracker.total_free_count)
     }
-    if len(track.memory_tracker.allocation_map) > 0 {
+    if len(track.memory_tracker.allocation_map) > 1 /* Memory allocations aside from the performance tracker. */ {
         _mem_is_printable :: proc(b: byte) -> bool {
             return b >= 32 && b <= 126
         }
