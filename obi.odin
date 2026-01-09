@@ -381,7 +381,9 @@ create_build_context :: proc(
 
         return ctx, General_Error.Failed_To_Parse_User_Args
 	}
-
+    when thread.IS_SUPPORTED {
+        if ctx._internal.user_args_options.job_count == 0 do ctx._internal.user_args_options.job_count = os.processor_core_count()
+    }
     ia.init_growing(&ctx.intern_arena, ctx.allocator) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
     ctx.c_export_path = c_export_path
