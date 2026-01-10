@@ -668,6 +668,7 @@ run_step_tree :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #call
 
             pool: thread.Pool
             thread.pool_init(&pool, context.allocator, thread_count)
+            defer thread.pool_destroy(&pool)
 
             _task_factory :: proc(
                 ctx: ^_Basic_Thread_Safe(Build_Context), 
