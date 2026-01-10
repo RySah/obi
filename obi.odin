@@ -964,8 +964,8 @@ create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller
     defer if err == nil do _backtrace()
 
     step = new(Step, ia.allocator(&ctx.intern_arena)) or_return
+    step^ = empty_step
     step.children = make([dynamic]^Step, ctx.allocator) or_return
-    //append(&ctx._internal.step_collection, step) or_return
     return step, nil
 }
 create_step_with_name :: proc(ctx: ^Build_Context, name: string, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {

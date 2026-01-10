@@ -1,3 +1,4 @@
-.*/
+.obi-cache
+.obi-out
 *.exe
 *.pdb
