@@ -645,117 +645,214 @@ run_step_tree :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #call
         return nil
     }
 
-    _multi_thread_impl :: proc(ctx: ^Build_Context, target_step: ^Step, colour_enabled: bool, thread_count: int) -> (err: Error) {
+    // _multi_thread_impl :: proc(ctx: ^Build_Context, target_step: ^Step, colour_enabled: bool, thread_count: int) -> (err: Error) {
+    //     context.logger = ctx.logger
+    //     context.allocator = ctx.allocator
+
+    //     if target_step.children != nil && len(target_step.children) > 0 {
+    //         _Basic_Thread_Safe :: struct($U: typeid) {
+    //             data: ^U,
+    //             mutex: sync.Mutex
+    //         }
+
+    //         tsa: thread_safe_allocator.Thread_Safe_Allocator
+    //         thread_safe_allocator.init(&tsa, context.allocator)
+    //         context.allocator = tsa
+
+    //         tsl: thread_safe_logger.Thread_Safe_Logger
+    //         thread_safe_logger.init(&tsl, context.logger)
+    //         context.logger = tsl
+
+    //         ts_build_ctx: _Basic_Thread_Safe(Build_Context)
+    //         ts_build_ctx.data = ctx
+
+    //         pool: thread.Pool
+    //         thread.pool_init(&pool, context.allocator, thread_count)
+    //         defer thread.pool_destroy(&pool)
+
+    //         _task_factory :: proc(
+    //             ctx: ^_Basic_Thread_Safe(Build_Context), 
+    //             step: ^Step, 
+    //             colour_enabled: bool, 
+    //             thread_pool: ^thread.Pool
+    //         ) -> (err: Error) {
+    //             _Task_Data :: struct {
+    //                 ctx: ^_Basic_Thread_Safe(Build_Context),
+    //                 step: ^Step,
+    //                 colour_enabled: bool,
+    //                 thread_pool: ^thread.Pool
+    //             }
+
+    //             if step.children != nil && len(step.children) > 0 {
+    //                 task_data_storage := make([]_Task_Data, len(step.children)) or_return
+    //                 defer delete(task_data_storage)
+
+    //                 for child, i in step.children {
+    //                     task_data := &task_data_storage[i]
+    //                     task_data^ = _Task_Data{
+    //                         ctx = ctx,
+    //                         step = child,
+    //                         colour_enabled = colour_enabled,
+    //                         thread_pool = thread_pool,
+    //                     }
+
+    //                     thread.pool_add_task(
+    //                         thread_pool, 
+    //                         context.allocator,
+    //                         proc(task: thread.Task) {
+    //                             context.allocator = task.allocator
+    //                             data := transmute(^_Task_Data)task.data
+
+    //                             _task_factory(data.ctx, data.step, data.colour_enabled, data.thread_pool)
+    //                         },
+    //                         task_data,
+    //                         user_index=i
+    //                     )
+
+    //                     thread.pool_finish(thread_pool)
+
+    //                     for &data in task_data_storage {
+    //                         if !data.step.build_time_flags.completed {
+    //                             log.errorf(
+    //                                 "Children of the step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+    //                                 step.name,
+    //                                 colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+    //                                 colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+    //                             )
+    //                             return nil
+    //                         }
+    //                     }
+    //                 }
+    //             }
+
+    //             if sync.mutex_guard(&ctx.mutex) {
+    //                 if success := run_step(ctx.data, step) or_return; !success && step.success_required {
+    //                     log.errorf(
+    //                         "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+    //                         step.name,
+    //                         colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+    //                         colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+    //                     )
+    //                     step.build_time_flags.completed = false
+    //                     return nil
+    //                 } else {
+    //                     step.build_time_flags.completed = true
+    //                 }
+    //             }
+
+    //             return nil
+    //         }
+
+    //         context.logger = thread_safe_logger.original(&tsl)
+    //         context.allocator = thread_safe_allocator.original(&tsa)
+    //     }
+
+    //     if success := run_step(ctx, target_step) or_return; !success && target_step.success_required {
+    //         log.errorf(
+    //             "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
+    //             target_step.name,
+    //             colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+    //             colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+    //         )
+    //         return nil
+    //     }
+
+    //     return nil
+    // }
+
+    _multi_thread_impl :: proc(
+        ctx: ^Build_Context,
+        target_step: ^Step,
+        colour_enabled: bool,
+        thread_count: int
+    ) -> (err: Error) {
+
         context.logger = ctx.logger
         context.allocator = ctx.allocator
 
-        if target_step.children != nil && len(target_step.children) > 0 {
-            _Basic_Thread_Safe :: struct($U: typeid) {
-                data: ^U,
-                mutex: sync.Mutex
-            }
-
-            tsa: thread_safe_allocator.Thread_Safe_Allocator
-            thread_safe_allocator.init(&tsa, context.allocator)
-            context.allocator = tsa
-
-            tsl: thread_safe_logger.Thread_Safe_Logger
-            thread_safe_logger.init(&tsl, context.logger)
-            context.logger = tsl
-
-            ts_build_ctx: _Basic_Thread_Safe(Build_Context)
-            ts_build_ctx.data = ctx
-
-            pool: thread.Pool
-            thread.pool_init(&pool, context.allocator, thread_count)
-            defer thread.pool_destroy(&pool)
-
-            _task_factory :: proc(
-                ctx: ^_Basic_Thread_Safe(Build_Context), 
-                step: ^Step, 
-                colour_enabled: bool, 
-                thread_pool: ^thread.Pool
-            ) -> (err: Error) {
-                _Task_Data :: struct {
-                    ctx: ^_Basic_Thread_Safe(Build_Context),
-                    step: ^Step,
-                    colour_enabled: bool,
-                    thread_pool: ^thread.Pool
-                }
-
-                if step.children != nil && len(step.children) > 0 {
-                    task_data_storage := make([]_Task_Data, len(step.children)) or_return
-                    defer delete(task_data_storage)
-
-                    for child, i in step.children {
-                        task_data := &task_data_storage[i]
-                        task_data^ = _Task_Data{
-                            ctx = ctx,
-                            step = child,
-                            colour_enabled = colour_enabled,
-                            thread_pool = thread_pool,
-                        }
-
-                        thread.pool_add_task(
-                            thread_pool, 
-                            context.allocator,
-                            proc(task: thread.Task) {
-                                context.allocator = task.allocator
-                                data := transmute(^_Task_Data)task.data
-
-                                _task_factory(data.ctx, data.step, data.colour_enabled, data.thread_pool)
-                            },
-                            task_data,
-                            user_index=i
-                        )
-
-                        thread.pool_finish(thread_pool)
-
-                        for &data in task_data_storage {
-                            if !data.step.build_time_flags.completed {
-                                log.errorf(
-                                    "Children of the step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-                                    step.name,
-                                    colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-                                    colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-                                )
-                                return nil
-                            }
-                        }
-                    }
-                }
-
-                if sync.mutex_guard(&ctx.mutex) {
-                    if success := run_step(ctx.data, step) or_return; !success && step.success_required {
-                        log.errorf(
-                            "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-                            step.name,
-                            colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-                            colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-                        )
-                        step.build_time_flags.completed = false
-                        return nil
-                    } else {
-                        step.build_time_flags.completed = true
-                    }
-                }
-
-                return nil
-            }
-
-            context.logger = thread_safe_logger.original(&tsl)
-            context.allocator = thread_safe_allocator.original(&tsa)
+        _Basic_Thread_Safe :: struct($U: typeid) {
+            data: ^U,
+            mutex: sync.Mutex
         }
 
-        if success := run_step(ctx, target_step) or_return; !success && target_step.success_required {
-            log.errorf(
-                "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-                target_step.name,
-                colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-                colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-            )
-            return nil
+        tsa: thread_safe_allocator.Thread_Safe_Allocator
+        thread_safe_allocator.init(&tsa, context.allocator)
+        context.allocator = tsa
+        ctx.allocator = context.allocator
+
+        tsl: thread_safe_logger.Thread_Safe_Logger
+        thread_safe_logger.init(&tsl, context.logger)
+        context.logger = tsl
+        ctx.logger = context.logger
+
+        ts_build_ctx: _Basic_Thread_Safe(Build_Context)
+        ts_build_ctx.data = ctx
+
+        pool: thread.Pool
+        thread.pool_init(&pool, context.allocator, thread_count)
+        defer thread.pool_destroy(&pool)
+
+        _Task_Data :: struct {
+            ctx: ^_Basic_Thread_Safe(Build_Context),
+            step: ^Step,
+            colour_enabled: bool,
+            thread_pool: ^thread.Pool
         }
+
+        _task_proc : thread.Task_Proc : proc(task: thread.Task) {
+            data := transmute(^_Task_Data)task.data
+
+            // Just run the step
+            success := false
+            if sync.mutex_guard(&data.ctx.mutex) {
+                success, _ = run_step(data.ctx.data, data.step)
+                data.step.build_time_flags.completed = success
+            }
+        
+            if !success && data.step.success_required {
+                log.errorf(
+                    "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s.",
+                    data.step.name,
+                    data.colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
+                    data.colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
+                )
+                data.step.build_time_flags.completed = false
+            } else {
+                data.step.build_time_flags.completed = true
+            }
+        
+            free(data)
+        }
+
+        _enqueue_step_tree :: proc(step: ^Step, ctx: ^_Basic_Thread_Safe(Build_Context), colour_enabled: bool, thread_pool: ^thread.Pool) {
+            // Enqueue children first
+            if step.children != nil && len(step.children) > 0 {
+                for child in step.children {
+                    _enqueue_step_tree(child, ctx, colour_enabled, thread_pool)
+                }
+            }
+        
+            data := new(_Task_Data)
+            data^ = _Task_Data{
+                ctx = ctx,
+                step = step,
+                colour_enabled = colour_enabled,
+                thread_pool = thread_pool
+            }
+        
+            thread.pool_add_task(thread_pool, context.allocator, _task_proc, data)
+        }
+
+        _enqueue_step_tree(target_step, &ts_build_ctx, colour_enabled, &pool)
+        thread.pool_start(&pool)
+
+        // Root waits
+        thread.pool_finish(&pool)
+
+        context.logger = thread_safe_logger.original(&tsl)
+        ctx.logger = context.logger
+        context.allocator = thread_safe_allocator.original(&tsa)
+        ctx.allocator = context.allocator
 
         return nil
     }
