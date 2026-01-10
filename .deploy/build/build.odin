@@ -48,6 +48,7 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
     obi.add_step(&ctx, fastcdc_gear_fill) or_return
 
     build_step := obi.create_step(&ctx, "build") or_return
+    obi.add_step(&ctx, build_step) or_return
     obi.add_child(build_step, fastcdc_gear_fill) or_return
 
     obi.build(&ctx) or_return
@@ -63,7 +64,7 @@ main :: proc() {
     fmt.assertf(err == nil, "build initiation failed. (%v)", err)
     defer obi.deinit()
 
-    build_ctx, err = build("build")
+    build_ctx, err = build("build", "-j=1")
     fmt.assertf(err == nil, "build failed. (%v)\nTRACEBACK:\n%s\n", err, obi.blame(&build_ctx, err, allow_newlines=true))
     
 }
