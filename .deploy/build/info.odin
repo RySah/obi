@@ -2,6 +2,8 @@ package build
 import "core:time"
 import "core:hash"
 import "core:mem"
+import "core:fmt"
+import "core:strings"
 
 /*
 These are the 2 seperate versioning formats that'll be used in the project.
@@ -68,4 +70,36 @@ version_hash :: proc(ver: Version) -> u64 {
 get_deployment_hash :: proc() -> u64 {
     odin_version_hash := ODIN_VERSION_HASH
     return hash.murmur64a(transmute([]byte)odin_version_hash) ~ version_hash(get_version())
+}
+
+aprint_release_candicate :: proc(rc: Release_Candidate, allocator := context.allocator, newline := false) -> string {
+    return fmt.aprintf("rc%d", transmute(u16)rc, allocator=allocator, newline=newline)
+}
+
+aprint_maybe_release_candicate :: proc(maybe_rc: Maybe(Release_Candidate), allocator := context.allocator, newline := false) -> string {
+    if rc, defined := maybe_rc.?; defined {
+        return aprint_release_candicate(rc, allocator, newline)
+    } else do return fmt.aprintf("", allocator=allocator, newline=newline)
+}
+
+aprint_sem_version :: proc(v: Sem_Version, allocator := context.allocator, newline := false) -> string {
+    return fmt.aprintf("v%d.%d.%d", v.major, v.minor, v.patch, allocator=allocator, newline=newline)
+}
+
+aprint_cal_version :: proc(v: Cal_Version, allocator := context.allocator, newline := false) -> string {
+    if v.MM >= 10 {
+        return fmt.aprintf("v%d.%d", v.YYYY, v.MM, allocator=allocator, newline=newline)
+    } else {
+        return fmt.aprintf("v%d.0%d", v.YYYY, v.MM, allocator=allocator, newline=newline)
+    }
+}
+
+aprint_version :: proc(v: Version, allocator := context.allocator, newline := false) -> string {
+    release := aprint_cal_version(v.release, allocator)
+    defer delete(release, allocator)
+    dev := aprint_sem_version(v.dev, allocator)
+    defer delete(dev, allocator)
+    rc := aprint_maybe_release_candicate(v.rc, allocator)
+    defer delete(rc)
+    return fmt.aprintf("%s dev-%s%s%s%s", release, dev, len(rc) > 0 ? "-" : "", rc, v.beta ? "-beta" : "", allocator=allocator, newline=newline)
 }

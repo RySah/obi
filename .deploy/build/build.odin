@@ -8,7 +8,8 @@ import obi "../.."
 
 
 // Generates GEAR data for the FastCDC based off the current deployment hash.
-// NOTE(rysah): This function is expected to create a new GEAR for FastCDC, PER deployment change, meaning rebuilds will trigger on new versions of this project.
+// NOTE(rysah): This function is expected to create a new GEAR for FastCDC, PER deployment change, meaning rebuilds will trigger on new versions 
+// of this project.
 fastcdc_gear_fill_step :: proc(ctx: ^obi.Build_Context) -> (step: ^obi.Step, err: obi.Error) {
     rng_state := rand.create(get_deployment_hash())
     rng := rand.default_random_generator(&rng_state)
@@ -49,6 +50,12 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
     defer obi.destroy_build_logger(&ctx, ctx.logger)
 
     context.logger = ctx.logger
+
+    version := get_version()
+    version_str := aprint_version(version)
+    defer delete(version_str)
+
+    log.infof("VERSION: %s", version_str)
 
     fastcdc_gear_fill := fastcdc_gear_fill_step(&ctx) or_return
     obi.add_step(&ctx, fastcdc_gear_fill) or_return
