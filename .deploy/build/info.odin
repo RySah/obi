@@ -53,7 +53,7 @@ get_cal_version :: proc() -> (out: Cal_Version) {
 // Update this function on new versions
 get_version :: proc() -> (OUT: Version) {
     OUT.dev = {
-        major=0,
+        major=1,
         minor=1,
         patch=0
     }

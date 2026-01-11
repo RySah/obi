@@ -52,7 +52,7 @@ clear :: proc(system: ^File_System) -> Error {
     return nil
 }
 
-hashf :: proc(
+hprintf :: proc(
     allocator: mem.Allocator,
     format: string,
     args: ..any
@@ -62,7 +62,7 @@ hashf :: proc(
     return s, hash_v, nil
 }
 
-hash :: proc(
+hprint :: proc(
     allocator: mem.Allocator,
     args: ..any, 
     sep := " "
@@ -72,11 +72,13 @@ hash :: proc(
     return s, hash_v, nil
 }
 
+FILE_EXT :: ".bin"
+
 path_from_hash :: proc(system: ^File_System, hash_v: u64) -> (path: string, err: mem.Allocator_Error) {
     hex_hash_buf: [17]byte
     hex_hash := strconv.write_uint(hex_hash_buf[:], hash_v, 16)
 
-    filename := strings.concatenate({ hex_hash, ".txt" }) or_return
+    filename := strings.concatenate({ hex_hash, FILE_EXT }) or_return
     defer delete(filename)
 
     path = filepath.join({ system.path, filename }, vmem.arena_allocator(&system.arena)) or_return
@@ -97,14 +99,14 @@ hash_exists :: proc(system: ^File_System, hash_v: u64) -> bool {
 }
 
 existsf :: proc(system: ^File_System, format: string, args: ..any) -> bool {
-    s, hash_v, err := hashf(context.allocator, format, ..args)
+    s, hash_v, err := hprintf(context.allocator, format, ..args)
     defer delete(s)
     if err != nil do return false
     return hash_exists(system, hash_v)
 }
 
 exists :: proc(system: ^File_System, args: ..any, sep:=" ") -> bool {
-    s, hash_v, err := hash(context.allocator, ..args, sep=sep)
+    s, hash_v, err := hprint(context.allocator, ..args, sep=sep)
     defer delete(s)
     if err != nil do return false
     return hash_exists(system, hash_v)
@@ -115,7 +117,7 @@ cachef :: proc(
     format: string,
     args: ..any
 ) -> (path: string, err: Error) {
-    s, hash_v := hashf(context.allocator, format, ..args) or_return
+    s, hash_v := hprintf(context.allocator, format, ..args) or_return
     defer delete(s)
     
     path = path_from_hash(system, hash_v) or_return
@@ -130,7 +132,7 @@ cache :: proc(
     args: ..any, 
     sep := " "
 ) -> (path: string, err: Error) {
-    s, hash_v := hash(context.allocator, ..args, sep=sep) or_return
+    s, hash_v := hprint(context.allocator, ..args, sep=sep) or_return
     defer delete(s)
     
     path = path_from_hash(system, hash_v) or_return
