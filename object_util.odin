@@ -1,6 +1,10 @@
 package obi
 
 import ia "intern_arena"
+import "core:path/filepath"
+import "core:strings"
+
+import "base:intrinsics"
 
 GCC_Optimization_Level :: enum u8 {
     O0, O1, O2, O3, Os, Ofast, Og,
@@ -177,6 +181,17 @@ Object_Compile :: struct {
 }
 
 C_Object_Compile :: distinct Object_Compile
+
+get_expected_output_object_paths :: proc(ctx: ^Build_Context, oc: ^$T) -> (out: []string, err: Error)
+where T == Object_Compile || intrinsics.type_base_type(T) == Object_Compile {
+    out = make([]string, len(oc.input_paths), ia.allocator(&ctx.intern_arena)) or_return
+    for &path, i in oc.input_paths {
+        _, filename := filepath.split(path)
+        // TODO(rysah): Perhaps consider interning this concat.
+        out[i] = strings.concatenate({ filepath.base(filename), OBJ_EXT }, ia.allocator(&ctx.intern_arena)) or_return
+    }
+    return out, nil
+}
 
 Object_Error :: enum int {
     None,

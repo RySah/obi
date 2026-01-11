@@ -60,8 +60,7 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
     fastcdc_gear_fill := fastcdc_gear_fill_step(&ctx) or_return
     obi.add_step(&ctx, fastcdc_gear_fill) or_return
 
-    build_step := obi.create_step(&ctx, "build") or_return
-    obi.add_step(&ctx, build_step) or_return
+    build_step := obi.emplace_step(&ctx, "build") or_return
     obi.add_child(build_step, fastcdc_gear_fill) or_return
 
     obi.build(&ctx) or_return
