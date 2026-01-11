@@ -72,9 +72,19 @@ fastcdc_chunk :: proc(
     }
 }
 
+@private _chunk_counter :: proc(_, _: int, client_data: rawptr) {
+    counter := transmute(^uint)client_data
+    counter^ += 1
+}
+
+fastcdc_chunk_count :: proc(data: []byte) -> (out: uint) {
+    fastcdc_chunk(data, _chunk_counter, &out)
+    return
+}
+
 Chunk_Sig :: struct {
     hash: u64,
-    size: u32
+    size, off: u32
 }
 
 Sig_Builder :: struct {
@@ -90,7 +100,7 @@ Sig_Builder :: struct {
     h := xxhash.XXH3_64(b.data[off:size])
     i := b.count
     b.count += 1
-    b.out[i] = { hash=h, size=u32(size) }
+    b.out[i] = { hash=h, size=u32(size), off=u32(off) }
 }
 
 build_sig :: proc(data: []byte, buf: []Chunk_Sig) -> []Chunk_Sig {
@@ -107,7 +117,7 @@ build_sig :: proc(data: []byte, buf: []Chunk_Sig) -> []Chunk_Sig {
 sig_equal :: proc(a, b: []Chunk_Sig) -> bool {
     if len(a) != len(b) do return false
     for i := 0; i < len(a); i += 1 {
-        if a[i].hash != b[i].hash || a[i].size != b[i].size do return false
+        if a[i].hash != b[i].hash || a[i].size != b[i].size || a[i].off != b[i].off do return false
     }
     return true
 }
