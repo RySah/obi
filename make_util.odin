@@ -163,8 +163,6 @@ make_to_subprocess :: proc(ctx: ^Build_Context, m: ^Make, caller_location := #ca
     }
     for &fl, j in m.extra_flags do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, fl) or_return
     cmd_p = ia.clone_value(&ctx.intern_arena, cmd) or_return
-    cmd_p.working_dir = cmd.working_dir
-    cmd_p.command = cmd.command
     return cmd_p, nil
 }
 

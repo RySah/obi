@@ -65,7 +65,8 @@ Error :: union #shared_nil {
     Allocator_Error,
     Make_Error,
     CMake_Error,
-    VS_Error
+    VS_Error,
+    Object_Error
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
@@ -232,7 +233,9 @@ Build_Context :: struct {
     // Context data specific to windows. This will only be managed when `ODIN_OS == .Windows`
     windows: struct {
         visual_studio_releases: VS_Releases,
-        visual_studio_cmake_path: Maybe(string)
+        visual_studio_cmake_path: Maybe(string),
+        visual_studio_cl_path: Maybe(string),
+        visual_studio_lib_path: Maybe(string)
     },
     // Data used internally
     _internal: struct {
@@ -394,10 +397,24 @@ create_build_context :: proc(
         vs_err: VS_Error
         if ctx.windows.visual_studio_releases, vs_err = vs_get_release_infos(&ctx); vs_err == nil {
             best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
-            found_cmake: bool
-            ctx.windows.visual_studio_cmake_path, found_cmake, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
+            
+            found_entry: bool
+            
+            ctx.windows.visual_studio_cmake_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
             if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-                if !found_cmake do ctx.windows.visual_studio_cmake_path = nil
+                if !found_entry do ctx.windows.visual_studio_cmake_path = nil
+            } else {
+                return ctx, vs_err
+            }
+            ctx.windows.visual_studio_cl_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cl", cwd=ctx.working_dir)
+            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+                if !found_entry do ctx.windows.visual_studio_cl_path = nil
+            } else {
+                return ctx, vs_err
+            }
+            ctx.windows.visual_studio_lib_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "lib", cwd=ctx.working_dir)
+            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+                if !found_entry do ctx.windows.visual_studio_lib_path = nil
             } else {
                 return ctx, vs_err
             }
@@ -644,121 +661,6 @@ run_step_tree :: proc(ctx: ^Build_Context, step: ^Step, caller_location := #call
 
         return nil
     }
-
-    // _multi_thread_impl :: proc(ctx: ^Build_Context, target_step: ^Step, colour_enabled: bool, thread_count: int) -> (err: Error) {
-    //     context.logger = ctx.logger
-    //     context.allocator = ctx.allocator
-
-    //     if target_step.children != nil && len(target_step.children) > 0 {
-    //         _Basic_Thread_Safe :: struct($U: typeid) {
-    //             data: ^U,
-    //             mutex: sync.Mutex
-    //         }
-
-    //         tsa: thread_safe_allocator.Thread_Safe_Allocator
-    //         thread_safe_allocator.init(&tsa, context.allocator)
-    //         context.allocator = tsa
-
-    //         tsl: thread_safe_logger.Thread_Safe_Logger
-    //         thread_safe_logger.init(&tsl, context.logger)
-    //         context.logger = tsl
-
-    //         ts_build_ctx: _Basic_Thread_Safe(Build_Context)
-    //         ts_build_ctx.data = ctx
-
-    //         pool: thread.Pool
-    //         thread.pool_init(&pool, context.allocator, thread_count)
-    //         defer thread.pool_destroy(&pool)
-
-    //         _task_factory :: proc(
-    //             ctx: ^_Basic_Thread_Safe(Build_Context), 
-    //             step: ^Step, 
-    //             colour_enabled: bool, 
-    //             thread_pool: ^thread.Pool
-    //         ) -> (err: Error) {
-    //             _Task_Data :: struct {
-    //                 ctx: ^_Basic_Thread_Safe(Build_Context),
-    //                 step: ^Step,
-    //                 colour_enabled: bool,
-    //                 thread_pool: ^thread.Pool
-    //             }
-
-    //             if step.children != nil && len(step.children) > 0 {
-    //                 task_data_storage := make([]_Task_Data, len(step.children)) or_return
-    //                 defer delete(task_data_storage)
-
-    //                 for child, i in step.children {
-    //                     task_data := &task_data_storage[i]
-    //                     task_data^ = _Task_Data{
-    //                         ctx = ctx,
-    //                         step = child,
-    //                         colour_enabled = colour_enabled,
-    //                         thread_pool = thread_pool,
-    //                     }
-
-    //                     thread.pool_add_task(
-    //                         thread_pool, 
-    //                         context.allocator,
-    //                         proc(task: thread.Task) {
-    //                             context.allocator = task.allocator
-    //                             data := transmute(^_Task_Data)task.data
-
-    //                             _task_factory(data.ctx, data.step, data.colour_enabled, data.thread_pool)
-    //                         },
-    //                         task_data,
-    //                         user_index=i
-    //                     )
-
-    //                     thread.pool_finish(thread_pool)
-
-    //                     for &data in task_data_storage {
-    //                         if !data.step.build_time_flags.completed {
-    //                             log.errorf(
-    //                                 "Children of the step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-    //                                 step.name,
-    //                                 colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-    //                                 colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-    //                             )
-    //                             return nil
-    //                         }
-    //                     }
-    //                 }
-    //             }
-
-    //             if sync.mutex_guard(&ctx.mutex) {
-    //                 if success := run_step(ctx.data, step) or_return; !success && step.success_required {
-    //                     log.errorf(
-    //                         "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-    //                         step.name,
-    //                         colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-    //                         colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-    //                     )
-    //                     step.build_time_flags.completed = false
-    //                     return nil
-    //                 } else {
-    //                     step.build_time_flags.completed = true
-    //                 }
-    //             }
-
-    //             return nil
-    //         }
-
-    //         context.logger = thread_safe_logger.original(&tsl)
-    //         context.allocator = thread_safe_allocator.original(&tsa)
-    //     }
-
-    //     if success := run_step(ctx, target_step) or_return; !success && target_step.success_required {
-    //         log.errorf(
-    //             "The step %[0]q was %[1]sREQUIRED%[2]s to pass, but %[1]sfailed%[2]s. %[1]sNO MORE STEPS WILL BE RAN%[2]s",
-    //             target_step.name,
-    //             colour_enabled ? ansi.CSI + ansi.BOLD + ansi.SGR : "",
-    //             colour_enabled ? ansi.CSI + ansi.RESET + ansi.SGR : ""
-    //         )
-    //         return nil
-    //     }
-
-    //     return nil
-    // }
 
     _multi_thread_impl :: proc(
         ctx: ^Build_Context,
@@ -1038,7 +940,8 @@ to_subprocess :: proc{
     make_to_subprocess,
     os_specific_subprocess_to_subprocess,
     arch_specific_subprocess_to_subprocess,
-    os_arch_specific_subprocess_to_subprocess
+    os_arch_specific_subprocess_to_subprocess,
+    c_object_compile_to_subprocess
 }
 to_step :: proc{
     subprocess_to_step,
@@ -1052,7 +955,8 @@ to_step :: proc{
     file_create_to_step,
     mkdir_to_step,
     cmake_in_source_build_to_step,
-    cmake_out_of_source_build_to_step
+    cmake_out_of_source_build_to_step,
+    c_object_compile_to_step
 }
 
 create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
