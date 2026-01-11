@@ -175,15 +175,17 @@ Optimization_Level :: enum u8 {
 
 OBJ_EXT :: ".obj" when ODIN_OS == .Windows else ".o"
 
+Object_Source :: enum u8 {
+    C
+}
+
 Object_Compile :: struct {
+    source: Object_Source,
     input_paths: []string,
     optimization: Optimization_Level
 }
 
-C_Object_Compile :: distinct Object_Compile
-
-get_expected_output_object_paths :: proc(ctx: ^Build_Context, oc: ^$T) -> (out: []string, err: Error)
-where T == Object_Compile || intrinsics.type_base_type(T) == Object_Compile {
+get_expected_output_object_paths :: proc(ctx: ^Build_Context, oc: ^Object_Compile) -> (out: []string, err: Error) {
     out = make([]string, len(oc.input_paths), ia.allocator(&ctx.intern_arena)) or_return
     for &path, i in oc.input_paths {
         _, filename := filepath.split(path)
@@ -199,9 +201,9 @@ Object_Error :: enum int {
     Incompatible_Or_No_Compiler_Program=1
 }
 
-c_object_compile_to_subprocess :: proc(
+object_compile_to_subprocess :: proc(
     ctx: ^Build_Context, 
-    oc: ^C_Object_Compile, 
+    oc: ^Object_Compile, 
     caller_location := #caller_location
 ) -> (cmd_p: ^Sub_Process_Command, err: Error) {
     _start_trace()
@@ -209,158 +211,161 @@ c_object_compile_to_subprocess :: proc(
     _trace()
     defer if err == nil do _backtrace()
 
-    when ODIN_OS == .Windows {
-        use_clang_msvc := true
-        if cl_path, cl_path_exists := ctx.windows.visual_studio_cl_path.?; cl_path_exists {
-            use_clang_msvc = false
-
-            maybe_msvc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), MSVC_Optimization_Level)
-
-            command_size := 1 // cl
-            if _, exists := maybe_msvc_optimization_level.?; exists do command_size += 1 // /O
-            command_size += 1 // /c
-            command_size += len(oc.input_paths)
-
-            cmd := Sub_Process_Command {
-                working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
-                command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
-                env=nil,
-                stdin=nil
+    switch oc.source {
+        case .C:
+            when ODIN_OS == .Windows {
+                use_clang_msvc := true
+                if cl_path, cl_path_exists := ctx.windows.visual_studio_cl_path.?; cl_path_exists {
+                    use_clang_msvc = false
+                
+                    maybe_msvc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), MSVC_Optimization_Level)
+                
+                    command_size := 1 // cl
+                    if _, exists := maybe_msvc_optimization_level.?; exists do command_size += 1 // /O
+                    command_size += 1 // /c
+                    command_size += len(oc.input_paths)
+                
+                    cmd := Sub_Process_Command {
+                        working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
+                        command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
+                        env=nil,
+                        stdin=nil
+                    }
+                
+                    cmd.command[0] = cl_path
+                    i := 1
+                    if msvc_optimization_level, exists := maybe_msvc_optimization_level.?; exists {
+                        cmd.command[i] = msvc_optimization_level_flag(msvc_optimization_level)   
+                        i += 1
+                    }
+                    cmd.command[i] = "/c"
+                    i += 1
+                    for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
+                    return ia.clone_value(&ctx.intern_arena, cmd)
+                } else if use_clang_msvc {
+                    if clang_cl_path, clang_cl_path_found := ta_subprocess_which("clang-cl") or_return; clang_cl_path_found {
+                        defer delete(clang_cl_path)
+                        maybe_clang_cl_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), Clang_CL_Optimization_Level)
+                    
+                        command_size := 1 // clang-cl
+                        if _, exists := maybe_clang_cl_optimization_level.?; exists do command_size += 1 // /O
+                        command_size += 1 // /c
+                        command_size += len(oc.input_paths)
+                    
+                        cmd := Sub_Process_Command {
+                            working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
+                            command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
+                            env=nil,
+                            stdin=nil
+                        }
+                    
+                        cmd.command[0] = cl_path
+                        i := 1
+                        if msvc_optimization_level, exists := maybe_clang_cl_optimization_level.?; exists {
+                            cmd.command[i] = clang_cl_optimization_level_flag(msvc_optimization_level)
+                            i += 1
+                        }
+                        cmd.command[i] = "/c"
+                        i += 1
+                        for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
+                        return ia.clone_value(&ctx.intern_arena, cmd)
+                    } else {
+                        return nil, Object_Error.Incompatible_Or_No_Compiler_Program
+                    }
+                }
+            } else when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+                if cc_path, cc_path_found := ta_subprocess_which("cc") or_return; cc_path_found {
+                    defer delete(cc_path)
+                    maybe_cc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), CC_Optimization_Level)
+                
+                    command_size := 1 // cc
+                    if _, exists := maybe_cc_optimization_level.?; exists do command_size += 1 // -O
+                    command_size += 1 // -c
+                    command_size += len(oc.input_paths)
+                
+                    cmd := Sub_Process_Command {
+                        working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
+                        command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
+                        env=nil,
+                        stdin=nil
+                    }
+                
+                    cmd.command[0] = cc_path
+                    i := 1
+                    if cc_optimization_level, exists := maybe_cc_optimization_level.?; exists {
+                        cmd.command[i] = cc_optimization_level_flag(cc_optimization_level)
+                        i += 1
+                    }
+                    cmd.command[i] = "-c"
+                    i += 1
+                    for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
+                    return ia.clone_value(&ctx.intern_arena, cmd)
+                }
             }
-
-            cmd.command[0] = cl_path
-            i := 1
-            if msvc_optimization_level, exists := maybe_msvc_optimization_level.?; exists {
-                cmd.command[i] = msvc_optimization_level_flag(msvc_optimization_level)   
-                i += 1
-            }
-            cmd.command[i] = "/c"
-            i += 1
-            for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
-            return ia.clone_value(&ctx.intern_arena, cmd)
-        } else if use_clang_msvc {
-            if clang_cl_path, clang_cl_path_found := ta_subprocess_which("clang-cl") or_return; clang_cl_path_found {
-                defer delete(clang_cl_path)
-                maybe_clang_cl_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), Clang_CL_Optimization_Level)
-
-                command_size := 1 // clang-cl
-                if _, exists := maybe_clang_cl_optimization_level.?; exists do command_size += 1 // /O
-                command_size += 1 // /c
+        
+            if gcc_path, gcc_path_found := ta_subprocess_which("gcc") or_return; gcc_path_found {
+                defer delete(gcc_path)
+                gcc_optimization_level := _to_base_optimization_level(oc.optimization)
+            
+                command_size := 1 // gcc
+                command_size += 1 // -O
+                command_size += 1 // -c
                 command_size += len(oc.input_paths)
-
+            
                 cmd := Sub_Process_Command {
                     working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
                     command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
                     env=nil,
                     stdin=nil
                 }
-
-                cmd.command[0] = cl_path
+            
+                cmd.command[0] = gcc_path
                 i := 1
-                if msvc_optimization_level, exists := maybe_clang_cl_optimization_level.?; exists {
-                    cmd.command[i] = clang_cl_optimization_level_flag(msvc_optimization_level)
-                    i += 1
-                }
-                cmd.command[i] = "/c"
+                cmd.command[i] = gcc_optimization_level_flag(gcc_optimization_level)
+                i += 1
+                cmd.command[i] = "-c"
                 i += 1
                 for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
                 return ia.clone_value(&ctx.intern_arena, cmd)
-            } else {
-                return nil, Object_Error.Incompatible_Or_No_Compiler_Program
-            }
-        }
-    } else when ODIN_OS == .Linux || ODIN_OS == .Darwin {
-        if cc_path, cc_path_found := ta_subprocess_which("cc") or_return; cc_path_found {
-            defer delete(cc_path)
-            maybe_cc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), CC_Optimization_Level)
-
-            command_size := 1 // cc
-            if _, exists := maybe_cc_optimization_level.?; exists do command_size += 1 // -O
-            command_size += 1 // -c
-            command_size += len(oc.input_paths)
-
-            cmd := Sub_Process_Command {
-                working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
-                command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
-                env=nil,
-                stdin=nil
-            }
-
-            cmd.command[0] = cc_path
-            i := 1
-            if cc_optimization_level, exists := maybe_cc_optimization_level.?; exists {
-                cmd.command[i] = cc_optimization_level_flag(cc_optimization_level)
+            } else if clang_path, clang_path_found := ta_subprocess_which("clang") or_return; clang_path_found {
+                defer delete(clang_path)
+                maybe_clang_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), Clang_Optimization_Level)
+            
+                command_size := 1 // clang
+                command_size += 1 // -O
+                command_size += 1 // -c
+                command_size += len(oc.input_paths)
+            
+                cmd := Sub_Process_Command {
+                    working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
+                    command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
+                    env=nil,
+                    stdin=nil
+                }
+            
+                cmd.command[0] = gcc_path
+                i := 1
+                if clang_optimization_level, exists := maybe_clang_optimization_level.?; exists {
+                    cmd.command[i] = clang_optimization_level_flag(clang_optimization_level)
+                    i += 1
+                }
+                cmd.command[i] = "-c"
                 i += 1
+                for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
+                return ia.clone_value(&ctx.intern_arena, cmd)
             }
-            cmd.command[i] = "-c"
-            i += 1
-            for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
-            return ia.clone_value(&ctx.intern_arena, cmd)
-        }
-    }
-
-    if gcc_path, gcc_path_found := ta_subprocess_which("gcc") or_return; gcc_path_found {
-        defer delete(gcc_path)
-        gcc_optimization_level := _to_base_optimization_level(oc.optimization)
-
-        command_size := 1 // gcc
-        command_size += 1 // -O
-        command_size += 1 // -c
-        command_size += len(oc.input_paths)
-
-        cmd := Sub_Process_Command {
-            working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
-            command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
-            env=nil,
-            stdin=nil
-        }
-
-        cmd.command[0] = gcc_path
-        i := 1
-        cmd.command[i] = gcc_optimization_level_flag(gcc_optimization_level)
-        i += 1
-        cmd.command[i] = "-c"
-        i += 1
-        for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
-        return ia.clone_value(&ctx.intern_arena, cmd)
-    } else if clang_path, clang_path_found := ta_subprocess_which("clang") or_return; clang_path_found {
-        defer delete(clang_path)
-        maybe_clang_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), Clang_Optimization_Level)
-
-        command_size := 1 // clang
-        command_size += 1 // -O
-        command_size += 1 // -c
-        command_size += len(oc.input_paths)
-
-        cmd := Sub_Process_Command {
-            working_dir = ia.intern_string(&ctx.intern_arena, ctx.working_dir) or_return,
-            command = make([]string, command_size, ia.allocator(&ctx.intern_arena)) or_return,
-            env=nil,
-            stdin=nil
-        }
-
-        cmd.command[0] = gcc_path
-        i := 1
-        if clang_optimization_level, exists := maybe_clang_optimization_level.?; exists {
-            cmd.command[i] = clang_optimization_level_flag(clang_optimization_level)
-            i += 1
-        }
-        cmd.command[i] = "-c"
-        i += 1
-        for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, path) or_return
-        return ia.clone_value(&ctx.intern_arena, cmd)
     }
 
     return nil, Object_Error.Incompatible_Or_No_Compiler_Program
 }
 
-c_object_compile_to_step :: proc(ctx: ^Build_Context, oc: ^C_Object_Compile, caller_location := #caller_location) -> (step: ^Step, err: Error) {
+object_compile_to_step :: proc(ctx: ^Build_Context, oc: ^Object_Compile, caller_location := #caller_location) -> (step: ^Step, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
 
-    cmd := c_object_compile_to_subprocess(ctx, oc) or_return
+    cmd := object_compile_to_subprocess(ctx, oc) or_return
     return subprocess_to_step(ctx, cmd)
 }
 

@@ -941,7 +941,7 @@ to_subprocess :: proc{
     os_specific_subprocess_to_subprocess,
     arch_specific_subprocess_to_subprocess,
     os_arch_specific_subprocess_to_subprocess,
-    c_object_compile_to_subprocess
+    object_compile_to_subprocess
 }
 to_step :: proc{
     subprocess_to_step,
@@ -956,7 +956,7 @@ to_step :: proc{
     mkdir_to_step,
     cmake_in_source_build_to_step,
     cmake_out_of_source_build_to_step,
-    c_object_compile_to_step
+    object_compile_to_step
 }
 
 create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {
