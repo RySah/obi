@@ -1107,6 +1107,7 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
             defer delete(pointer_decls)
             _is_child :: proc(target: ^gb.Decl, arr: []^gb.Decl) -> bool {
                 for &decl in arr {
+                    if decl == nil do continue
                     if pd, is_pd := &decl.variant.(gb.Pointer_Decl); is_pd {
                         if pd.underlying == target do return true 
                     } else do return false
@@ -1135,6 +1136,7 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                 to_upd := make([dynamic]^gb.Decl)
                 defer delete(to_upd)
                 for target in arr {
+                    if target == nil do continue
                     if !_is_child(target, arr) {
                         deepest := _find_deepest(target)
                         if pointer_decl, is_pointer_decl := deepest.variant.(gb.Pointer_Decl); is_pointer_decl {

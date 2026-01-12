@@ -6,7 +6,6 @@ import "core:log"
 
 import obi "../.."
 
-
 // Generates GEAR data for the FastCDC based off the current deployment hash.
 // NOTE(rysah): This function is expected to create a new GEAR for FastCDC, PER deployment change, meaning rebuilds will trigger on new versions 
 // of this project.
@@ -25,6 +24,28 @@ fastcdc_gear_fill_step :: proc(ctx: ^obi.Build_Context) -> (step: ^obi.Step, err
     }
     step = obi.to_step(ctx, &file_create) or_return
     step.name = "fastcdc-gear-fill"
+    return step, nil
+}
+
+mpack_bindgen_step :: proc(ctx: ^obi.Build_Context) -> (step: ^obi.Step, err: obi.Error) {
+    c_info := obi.c_import(ctx, "third_party/api/mpack.h", emit_options=obi.Bindgen_Emit_Options{  
+        cases=#partial{
+            .Type = .Ada,
+            .Function = .Snake,
+            .Enum_Field = .Screaming_Snake,
+            .Param = .Snake,
+            .Field = .Snake
+        },
+        link_prefixes={"mpack_"},
+        package_name="mpack",
+        foreign_import=obi.Bindgen_Foreign_Get{
+            alias="mpack_lib",
+            expr=obi.Bindgen_Foreign_Import_Expr(`when ODIN_OS == .Windows { foreign import mpack_lib "mpack.lib"; } else { foreign import mpack_lib "mpack.a"; }`)
+        }
+    }) or_return
+    c_info.output_directory = "../mpack"
+    step = obi.to_step(ctx, c_info) or_return
+    step.name = "mpack-bindgen"
     return step, nil
 }
 
@@ -60,8 +81,12 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
     fastcdc_gear_fill := fastcdc_gear_fill_step(&ctx) or_return
     obi.add_step(&ctx, fastcdc_gear_fill) or_return
 
+    mpack_bindgen := mpack_bindgen_step(&ctx) or_return
+    obi.add_step(&ctx, mpack_bindgen) or_return
+
     build_step := obi.emplace_step(&ctx, "build") or_return
     obi.add_child(build_step, fastcdc_gear_fill) or_return
+    obi.add_child(build_step, mpack_bindgen) or_return
 
     obi.build(&ctx) or_return
 
