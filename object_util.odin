@@ -198,7 +198,7 @@ Object_Error :: enum int {
     Incompatible_Or_No_Compiler_Program=1
 }
 
-get_expected_output_object_paths :: proc(ctx: ^Build_Context, oc: ^Object_Spec) -> (out: []Object_Path, err: Error) {
+get_expected_output_object_paths_from_object_spec :: proc(ctx: ^Build_Context, oc: ^Object_Spec) -> (out: []Object_Path, err: Error) {
     out = make([]Object_Path, len(oc.sources), ia.allocator(&ctx.intern_arena)) or_return
     for &source, i in oc.sources {
         switch &path in source {
@@ -210,6 +210,16 @@ get_expected_output_object_paths :: proc(ctx: ^Build_Context, oc: ^Object_Spec) 
     }
     return out, nil
 }
+get_expected_output_object_paths_from_c_object_spec :: proc(ctx: ^Build_Context, oc: ^C_Object_Spec) -> (out: []Object_Path, err: Error) { 
+    out = make([]Object_Path, len(oc.input_paths), ia.allocator(&ctx.intern_arena)) or_return
+    for &path, i in oc.input_paths {
+        _, filename := filepath.split(transmute(string)path)
+        // TODO(rysah): Perhaps consider interning this concat.
+        out[i] = transmute(Object_Path)strings.concatenate({ filepath.base(filename), OBJ_EXT }, ia.allocator(&ctx.intern_arena)) or_return
+    }
+    return out, nil
+}
+get_expected_output_object_paths :: proc{get_expected_output_object_paths_from_object_spec,get_expected_output_object_paths_from_c_object_spec}
 
 c_object_spec_to_subprocess :: proc(
     ctx: ^Build_Context, 
@@ -222,10 +232,7 @@ c_object_spec_to_subprocess :: proc(
     defer if err == nil do _backtrace()
 
     when ODIN_OS == .Windows {
-        use_clang_msvc := true
         if cl_path, cl_path_exists := ctx.windows.visual_studio_cl_path.?; cl_path_exists {
-            use_clang_msvc = false
-        
             maybe_msvc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), MSVC_Optimization_Level)
         
             command_size := 1 // cl
@@ -250,7 +257,7 @@ c_object_spec_to_subprocess :: proc(
             i += 1
             for &path, j in oc.input_paths do cmd.command[i+j] = ia.intern_by_value(&ctx.intern_arena, transmute(string)path) or_return
             return ia.clone_value(&ctx.intern_arena, cmd)
-        } else if use_clang_msvc {
+        } else {
             if clang_cl_path, clang_cl_path_found := ta_subprocess_which("clang-cl") or_return; clang_cl_path_found {
                 defer delete(clang_cl_path)
                 maybe_clang_cl_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), Clang_CL_Optimization_Level)

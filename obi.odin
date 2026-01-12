@@ -66,7 +66,8 @@ Error :: union #shared_nil {
     Make_Error,
     CMake_Error,
     VS_Error,
-    Object_Error
+    Object_Error,
+    Static_Lib_Error
 }
 
 DEFAULT_CACHE_FILE_SYSTEM_PATH :: ".obi-cache"
@@ -957,7 +958,8 @@ to_step :: proc{
     cmake_in_source_build_to_step,
     cmake_out_of_source_build_to_step,
     c_object_spec_to_step,
-    object_spec_to_step
+    object_spec_to_step,
+    static_lib_spec_to_step
 }
 
 create_step_without_name :: proc(ctx: ^Build_Context, caller_location := #caller_location) -> (step: ^Step, err: Allocator_Error) {

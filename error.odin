@@ -17,6 +17,8 @@ import lc "bindgen/c/clang_util/libclang"
 // Takes an error and provides more context on which PACKAGE it may have come from.
 sb_expand_error :: proc(err: Error, sb: ^strings.Builder) {
     switch underlying_err1 in err {
+        case Static_Lib_Error:
+            fmt.sbprint(sb, "obi.Static_Lib_Error -> ", underlying_err1, sep="")
         case Object_Error:
             fmt.sbprint(sb, "obi.Object_Error -> ", underlying_err1, sep="")
         case General_Error:
