@@ -54,8 +54,8 @@ get_cal_version :: proc() -> (out: Cal_Version) {
 get_version :: proc() -> (OUT: Version) {
     OUT.dev = {
         major=3,
-        minor=0,
-        patch=0
+        minor=2,
+        patch=2
     }
     OUT.release = get_cal_version()
     OUT.rc = nil

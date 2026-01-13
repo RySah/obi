@@ -11,6 +11,8 @@ import "core:slice"
 import "core:log"
 import "core:fmt"
 import "core:strconv"
+import "core:sync"
+import "core:os"
 
 import "base:runtime"
 
@@ -103,7 +105,8 @@ make_type_aliases :: proc(
         { name="ptrdiff_t", expr="c.ptrdiff_t", replace_only=true },
         { name="intptr_t", expr="c.intptr_t", replace_only=true },
         { name="uintptr_t", expr="c.uintptr_t", replace_only=true },
-        { name="wchar_t", expr="c.wchar_t", replace_only=true }
+        { name="wchar_t", expr="c.wchar_t", replace_only=true },
+        { name="FILE", expr="c.FILE", replace_only=true }
     }
 
     extra_len := 0
@@ -365,7 +368,6 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
                 size=size_of(uintptr),
                 alignment=align_of(uintptr)
             }
-            // out_decl.privacy = .File_Private
             return out_decl, nil
         } else do return nil, nil
     } else if T.kind == .ConstantArray {
@@ -378,9 +380,26 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
             elem_count=cast(int)clang.getArraySize(T)
         }
         return out_decl, nil
-    } else {
+    } else {        
         decl_cursor := cu.getTypeDeclaration(T, sm)
         log.infof("Falling back to visit type declaration... %v", decl_cursor)
+
+        if T.kind == .Typedef {
+            underlying_t := cu.getTypedefDeclUnderlyingType(decl_cursor, sm)
+            if underlying_t.kind == .Pointer {
+                pointee_t := cu.getPointeeType(underlying_t, sm)
+                if pointee_t.kind == .FunctionProto {
+                    underlying_decl := resolve_decl(factory, underlying_t, sm) or_return
+                    out_decl = gb.make_decl(&factory.decls) or_return
+                    out_decl.variant = gb.Alias_Decl {
+                        name=strings.clone(T.ident, gb.decl_factory_allocator(&factory.decls)) or_return,
+                        underlying=underlying_decl
+                    }
+                    fmt.eprintfln("ut: %#v pt: %#v ud: %#v", underlying_t, pointee_t, underlying_decl)
+                    return out_decl, nil
+                }
+            }
+        }
 
         usr_str: string
         usr := cu.getCursorUSR(decl_cursor)
@@ -396,10 +415,6 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
             nonbase.resolving_usr[usr_str] = true
         }
         defer if !nil_usr_fl do delete_key(&nonbase.resolving_usr, usr_str)
-
-        // if seen, exists := nonbase.seen_usr[usr_str]; exists && seen {
-        //     return get_decl(factory, T)
-        // }
 
         log.infof("Visiting children ...")
         cu.visitChildren(decl_cursor, visit_type, sm, factory, DEFAULT_VISITOR_OPTIONS) or_return
@@ -456,6 +471,8 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 unsigned_fl: bool
             }
 
+            out_decl := gb.make_decl(&factory.decls) or_return
+
             type := cu.getCursorType(cursor, sm)
             underlying_type := cu.Type_resolve(cu.getEnumIntegerType(cursor, sm), sm)
             info.underlying_type = resolve_decl(factory, underlying_type, sm) or_return
@@ -490,7 +507,6 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 options=DEFAULT_VISITOR_OPTIONS
             ) or_return
 
-            out_decl := gb.make_decl(&factory.decls) or_return
             out_decl.variant = gb.Type_Decl {
                 name=strings.clone(cursor.ident, gb.decl_factory_allocator(&factory.decls)) or_return,
                 info=info,
@@ -525,6 +541,8 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             }
 
             _Fields_Client_Data :: struct {
+                record_decl: ^gb.Decl,
+                record_name: string,
                 factory: ^gb.Factory,
                 fields: ^[dynamic]gb.Name_Type_Field,
                 bitfield_runs: ^[dynamic]_Bitfield_Run,
@@ -536,7 +554,11 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             bitfield_runs := make([dynamic]_Bitfield_Run) or_return
             defer delete(bitfield_runs)
 
+            out_decl := gb.make_decl(&factory.decls) or_return
+
             fields_client_data := _Fields_Client_Data{
+                record_decl=out_decl,
+                record_name=cursor.ident,
                 factory=factory,
                 fields=&info.fields,
                 bitfield_runs=&bitfield_runs,
@@ -544,8 +566,14 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
             }
             cu.visitChildren(
                 cursor,
-                proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_data: cu.Client_Data) -> (result: cu.Child_Visit_Result, err: cu.Error) {
+                proc(
+                    cursor, parent: cu.Cursor, 
+                    sm: ^cu.String_Manager, 
+                    client_data: cu.Client_Data
+                ) -> (result: cu.Child_Visit_Result, err: cu.Error) {
                     client_data := transmute(^_Fields_Client_Data)client_data
+                    record_decl: ^gb.Decl = client_data.record_decl
+                    record_name: string = client_data.record_name
                     factory: ^gb.Factory = client_data.factory
                     fields: ^[dynamic]gb.Name_Type_Field = client_data.fields
                     bitfield_runs: ^[dynamic]_Bitfield_Run = client_data.bitfield_runs
@@ -581,6 +609,28 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                             type := cu.getCursorType(cursor, sm)
                             log.infof("Resolving type for field (%q: %s).", ntf.name, type.ident)
                             ntf.type = resolve_decl(factory, type, sm) or_return
+                            if ntf.type == nil && type.kind == .Pointer { // Fallback incase the type is actually self referential
+                                ptr_depth := 1
+                                pointee_type := cu.getPointeeType(type, sm)
+                                for pointee_type.kind == .Pointer {
+                                    pointee_type = cu.getPointeeType(pointee_type, sm)
+                                    ptr_depth += 1
+                                }
+                                if pointee_type.ident == record_name { // is self referential
+                                    ptr_decl := gb.make_decl(&factory.decls) or_return
+                                    ptr_decl.variant = gb.Pointer_Decl{
+                                        underlying=record_decl
+                                    }
+                                    for j := ptr_depth-1; j > 0; j -= 1 {
+                                        nest_ptr_decl := gb.make_decl(&factory.decls) or_return
+                                        nest_ptr_decl.variant = gb.Pointer_Decl{
+                                            underlying=ptr_decl
+                                        }
+                                        ptr_decl=nest_ptr_decl
+                                    }
+                                    ntf.type = ptr_decl
+                                }
+                            }
                             log.infof("Parsed record field declaration: %v", ntf)
                             append(fields, ntf) or_return
 
@@ -643,7 +693,6 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
                 remove_range(&info.fields, 0, cutoff_i)
             }
             
-            out_decl := gb.make_decl(&factory.decls) or_return
             if kind == .UnionDecl {
                 out_decl.variant = gb.Type_Decl {
                     name=strings.clone(cursor.ident, gb.decl_factory_allocator(&factory.decls)) or_return,
@@ -712,10 +761,11 @@ visit_type :: proc(cursor, parent: cu.Cursor, sm: ^cu.String_Manager, client_dat
 
             underlying_type := cu.getTypedefDeclUnderlyingType(cursor, sm)
 
+            out_decl := gb.make_decl(&factory.decls) or_return
+
             underlying_decl: ^gb.Decl
             underlying_decl = resolve_decl(factory, underlying_type, sm) or_return
-            
-            out_decl := gb.make_decl(&factory.decls) or_return
+
             out_decl.variant = gb.Alias_Decl {
                 name=strings.clone(cursor.ident, gb.decl_factory_allocator(&factory.decls)) or_return,
                 underlying=underlying_decl
@@ -956,44 +1006,75 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                 ) or_return
             }
 
-            _append_tree :: proc(out: ^[dynamic]^gb.Decl, decl: ^gb.Decl) {
-                if decl != nil do switch &internal in decl.variant {
-                    case gb.Type_Decl:
-                        switch &info in internal.info {
+            _append_tree :: proc(out: ^[dynamic]^gb.Decl, root: ^gb.Decl) {
+                if out == nil || root == nil do return
+
+                Frame :: struct {
+                    decl: ^gb.Decl,
+                    expanded: bool
+                }
+            
+                stack   := make([dynamic]Frame)
+                visited := make(map[^gb.Decl]bool)
+                defer delete(stack)
+                defer delete(visited)
+            
+                append(&stack, Frame{decl = root, expanded = false})
+            
+                for len(stack) > 0 {
+                    frame := stack[len(stack)-1]
+                    pop(&stack)
+                
+                    if frame.decl == nil do continue
+                
+                    if !frame.expanded {
+                        if visited[frame.decl] do continue
+                        visited[frame.decl] = true
+                    
+                        append(&stack, Frame{decl = frame.decl, expanded = true})
+                    
+                        switch &internal in frame.decl.variant {
+                        case gb.Type_Decl:
+                            switch &info in internal.info {
                             case gb.Struct_Info:
-                                for &field in info.fields {
-                                    _append_tree(out, field.type)
+                                for i := len(info.fields)-1; i >= 0; i -= 1 {
+                                    append(&stack, Frame{decl = info.fields[i].type})
                                 }
                             case gb.Union_Info:
-                                for &field in info.fields {
-                                    _append_tree(out, field.type)
+                                for i := len(info.fields)-1; i >= 0; i -= 1 {
+                                    append(&stack, Frame{decl = info.fields[i].type})
                                 }
                             case gb.Enum_Info:
-                                _append_tree(out, info.underlying_type)
-                            case gb.Builtin_Info:
-                                // Nothing to append
+                                append(&stack, Frame{decl = info.underlying_type})
                             case gb.Func_Info:
-                                _append_tree(out, info.return_decl)
-                                for decl in info.param_decls do _append_tree(out, decl)
+                                for i := len(info.param_decls)-1; i >= 0; i -= 1 {
+                                    append(&stack, Frame{decl = info.param_decls[i]})
+                                }
+                                append(&stack, Frame{decl = info.return_decl})
+                            case gb.Builtin_Info:
+                            }
+                        case gb.Func_Decl:
+                            for i := len(internal.params)-1; i >= 0; i -= 1 {
+                                append(&stack, Frame{decl = internal.params[i].type})
+                            }
+                            append(&stack, Frame{decl = internal.return_type})
+                        case gb.Alias_Decl:
+                            append(&stack, Frame{decl = internal.underlying})
+                        case gb.Pointer_Decl:
+                            append(&stack, Frame{decl = internal.underlying})
+                        case gb.Constant_Array_Decl:
+                            append(&stack, Frame{decl = internal.underlying})
+                        case gb.Unknown_Alias_Decl:
                         }
-                    case gb.Func_Decl:
-                        _append_tree(out, internal.return_type)
-                        for &param in internal.params {
-                            _append_tree(out, param.type)
-                        }
-                    case gb.Alias_Decl:
-                        _append_tree(out, internal.underlying)
-                    case gb.Pointer_Decl:
-                        _append_tree(out, internal.underlying)
-                    case gb.Unknown_Alias_Decl:
-                        // Nothing to append
-                    case gb.Constant_Array_Decl:
-                        _append_tree(out, internal.underlying)
+                    } else {
+                        append(out, frame.decl)
+                    }
                 }
-                append(out, decl)
             }
 
+
             for ident in non_std_info.record_and_enums {
+                fmt.eprintln(ident)
                 for decl in factory.decls.items {
                     if decl == nil {
                         _append_tree(&valid_decls, nil)
@@ -1007,7 +1088,10 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                 }
             }
 
+            fmt.eprintln()
+
             for ident in non_std_info.funcs {
+                fmt.eprintln(ident)
                 for decl in factory.decls.items {
                     if func, is_func := decl.variant.(gb.Func_Decl); is_func {
                         if strings.compare(ident, func.name) == 0 {
