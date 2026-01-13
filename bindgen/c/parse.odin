@@ -395,7 +395,6 @@ resolve_decl :: proc(factory: ^gb.Factory, T: cu.Type, sm: ^cu.String_Manager) -
                         name=strings.clone(T.ident, gb.decl_factory_allocator(&factory.decls)) or_return,
                         underlying=underlying_decl
                     }
-                    fmt.eprintfln("ut: %#v pt: %#v ud: %#v", underlying_t, pointee_t, underlying_decl)
                     return out_decl, nil
                 }
             }
@@ -1074,7 +1073,6 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
 
 
             for ident in non_std_info.record_and_enums {
-                fmt.eprintln(ident)
                 for decl in factory.decls.items {
                     if decl == nil {
                         _append_tree(&valid_decls, nil)
@@ -1088,10 +1086,7 @@ parse :: proc(factory: ^gb.Factory, path: string, options := Parse_Options{}) ->
                 }
             }
 
-            fmt.eprintln()
-
             for ident in non_std_info.funcs {
-                fmt.eprintln(ident)
                 for decl in factory.decls.items {
                     if func, is_func := decl.variant.(gb.Func_Decl); is_func {
                         if strings.compare(ident, func.name) == 0 {

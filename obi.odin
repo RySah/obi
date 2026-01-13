@@ -29,6 +29,9 @@ import "core:mem"
 Allocator :: mem.Allocator
 Allocator_Error :: mem.Allocator_Error
 
+import promise "promise"
+Promise :: promise.Promise
+
 import bindgen "bindgen"
 Bindgen_Factory :: bindgen.Factory
 Bindgen_Emit_Options :: bindgen.Emit_Options
@@ -233,10 +236,10 @@ Build_Context :: struct {
     state_fingerprint: Hasher,
     // Context data specific to windows. This will only be managed when `ODIN_OS == .Windows`
     windows: struct {
-        visual_studio_releases: VS_Releases,
-        visual_studio_cmake_path: Maybe(string),
-        visual_studio_cl_path: Maybe(string),
-        visual_studio_lib_path: Maybe(string)
+        visual_studio_releases: Promise(VS_Releases),
+        visual_studio_cmake_path: Promise(Maybe(string)),
+        visual_studio_cl_path: Promise(Maybe(string)),
+        visual_studio_lib_path: Promise(Maybe(string))
     },
     // Data used internally
     _internal: struct {
@@ -394,35 +397,79 @@ create_build_context :: proc(
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = ta_os2_get_working_directory(ia.allocator(&ctx.intern_arena)) or_return
     ctx.state_fingerprint=Default_State_Hasher
-    when ODIN_OS == .Windows {
-        vs_err: VS_Error
-        if ctx.windows.visual_studio_releases, vs_err = vs_get_release_infos(&ctx); vs_err == nil {
-            best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
+    // when ODIN_OS == .Windows { 
+    //     // NOTE(rysah): This overall process without the usage of promises, TANKSSS performance (due to the json parsing libary or more likely microslop)
+    //     _Build_Context_Guard :: struct {
+    //         ctx: ^Build_Context,
+    //         mtx: sync.RW_Mutex
+    //     }
+
+    //     ctx_guard := _Build_Context_Guard{
+    //         ctx=ctx,
+
+    //     }
+        
+    //     _Init_Promise_Data :: struct {
+    //         err: VS_Error,
+    //         ctx: ^Build_Context,
+    //         mtx: sync.Mutex
+    //     }
+    //     init_microslop_data := new(_Init_Promise_Data, allocator=ia.allocator(&ctx.intern_arena)) or_return
+
+    //     promise.init(&ctx.windows.visual_studio_releases, allocator=ia.allocator(&ctx.intern_arena)) or_return
+    //     promise.set(&ctx.windows.visual_studio_releases, 
+    //         proc(source: ^Promise(VS_Releases), output: ^VS_Releases, client_data: rawptr) {
+    //             data := transmute(^_Init_Promise_Data)client_data
+    //             if sync.rw_mutex_guard(&data.mtx) {
+    //                 output^, data.err = vs_get_release_infos(data.ctx)
+    //             }
+    //         },
+    //         init_microslop_data
+    //     )
+
+    //     _Promise_Data :: struct {
+    //         err: VS_Error,
+    //         releases_promise: ^Promise(VS_Releases),
+    //         ctx: ^Build_Context,
+    //         mtx: 
+    //     }
+
+    //     promise.init(&ctx.windows.visual_studio_cmake_path, allocator=ia.allocator(&ctx.intern_arena)) or_return
+    //     promise.set(&ctx.windows.visual_studio_cmake_path,
+    //         proc(source: ^Promise(Maybe(string)), output: ^Maybe(string), client_data: rawptr) {
+
+    //         },
+    //         microslop_data
+    //     )
+
+    //     vs_err: VS_Error
+    //     if ctx.windows.visual_studio_releases, vs_err = vs_get_release_infos(&ctx); vs_err == nil {
+    //         best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
             
-            found_entry: bool
+    //         found_entry: bool
             
-            ctx.windows.visual_studio_cmake_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
-            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-                if !found_entry do ctx.windows.visual_studio_cmake_path = nil
-            } else {
-                return ctx, vs_err
-            }
-            ctx.windows.visual_studio_cl_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cl", cwd=ctx.working_dir)
-            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-                if !found_entry do ctx.windows.visual_studio_cl_path = nil
-            } else {
-                return ctx, vs_err
-            }
-            ctx.windows.visual_studio_lib_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "lib", cwd=ctx.working_dir)
-            if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-                if !found_entry do ctx.windows.visual_studio_lib_path = nil
-            } else {
-                return ctx, vs_err
-            }
-        } else if vs_err != VS_General_Error.Missing_Program {
-            return ctx, vs_err
-        }
-    }
+    //         ctx.windows.visual_studio_cmake_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
+    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+    //             if !found_entry do ctx.windows.visual_studio_cmake_path = nil
+    //         } else {
+    //             return ctx, vs_err
+    //         }
+    //         ctx.windows.visual_studio_cl_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cl", cwd=ctx.working_dir)
+    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+    //             if !found_entry do ctx.windows.visual_studio_cl_path = nil
+    //         } else {
+    //             return ctx, vs_err
+    //         }
+    //         ctx.windows.visual_studio_lib_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "lib", cwd=ctx.working_dir)
+    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
+    //             if !found_entry do ctx.windows.visual_studio_lib_path = nil
+    //         } else {
+    //             return ctx, vs_err
+    //         }
+    //     } else if vs_err != VS_General_Error.Missing_Program {
+    //         return ctx, vs_err
+    //     }
+    // }
     ctx._internal.step_collection = make([dynamic]^Step, ctx.allocator) or_return
     return ctx, nil
 }

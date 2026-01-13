@@ -234,7 +234,7 @@ _Iobuf :: struct #align(8)
 {
     _placeholder: rawptr
 }
-FILE :: _Iobuf
+FILE :: c.FILE
 @(private="file") BIND_GEN_OPAQUE_T :: distinct rawptr
 when ODIN_OS == .Windows { foreign import mpack_lib "mpack.lib"; } else { foreign import mpack_lib "mpack.a"; }
 foreign mpack_lib

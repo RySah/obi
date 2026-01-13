@@ -1,4 +1,4 @@
 
 build_directory = "build" 
-extra_build_flags = ["-debug"]
+extra_build_flags = []
 output_directory = ".obi-out/build"
