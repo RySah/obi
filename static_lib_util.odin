@@ -3,6 +3,7 @@ package obi
 import "core:strings"
 import "core:path/filepath"
 import ia "intern_arena"
+import promise "promise"
 
 STATIC_LIB_EXT :: ".lib" when ODIN_OS == .Windows else ".a"
 
@@ -56,7 +57,7 @@ static_lib_spec_to_step :: proc(ctx: ^Build_Context, sl: ^Static_Lib_Spec, calle
     }
 
     when ODIN_OS == .Windows {
-        if lib_path, lib_path_exists := ctx.windows.visual_studio_lib_path.?; lib_path_exists {
+        if lib_path, lib_path_exists := promise.get_ref(&ctx.windows.visual_studio_lib_path).?; lib_path_exists {
             output_path := transmute(string)sl.output
             if filepath.ext(output_path) != STATIC_LIB_EXT {
                 output_path = strings.concatenate({ output_path, STATIC_LIB_EXT }, allocator=ia.allocator(&ctx.intern_arena)) or_return

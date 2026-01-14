@@ -49,7 +49,7 @@ mpack_bindgen_step :: proc(ctx: ^obi.Build_Context) -> (step: ^obi.Step, err: ob
     return step, nil
 }
 
-build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
+build :: proc(user_args: ..string) -> obi.Error {
     when ODIN_DEBUG {
         track: obi.Performance_Tracker
 
@@ -64,11 +64,11 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
         }
     }
 
-    ctx = obi.create_build_context(user_args, is_main=true) or_return
-    defer obi.destroy_build_context(&ctx) 
+    ctx := obi.create_build_context(user_args, is_main=true) or_return
+    defer obi.destroy_build_context(ctx) 
     
-    ctx.logger = obi.create_build_logger(&ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
-    defer obi.destroy_build_logger(&ctx, ctx.logger)
+    ctx.logger = obi.create_build_logger(ctx, lowest=obi.Debug_Mode_Lowest_Build_Logger_Level, opt=obi.Debug_Mode_Build_Logger_Opts) or_return
+    defer obi.destroy_build_logger(ctx, ctx.logger)
 
     context.logger = ctx.logger
 
@@ -78,19 +78,19 @@ build :: proc(user_args: ..string) -> (ctx: obi.Build_Context, err: obi.Error) {
 
     log.infof("VERSION: %s", version_str)
 
-    fastcdc_gear_fill := fastcdc_gear_fill_step(&ctx) or_return
-    obi.add_step(&ctx, fastcdc_gear_fill) or_return
+    fastcdc_gear_fill := fastcdc_gear_fill_step(ctx) or_return
+    obi.add_step(ctx, fastcdc_gear_fill) or_return
 
-    mpack_bindgen := mpack_bindgen_step(&ctx) or_return
-    obi.add_step(&ctx, mpack_bindgen) or_return
+    mpack_bindgen := mpack_bindgen_step(ctx) or_return
+    obi.add_step(ctx, mpack_bindgen) or_return
 
-    build_step := obi.emplace_step(&ctx, "build") or_return
+    build_step := obi.emplace_step(ctx, "build") or_return
     obi.add_child(build_step, fastcdc_gear_fill) or_return
     obi.add_child(build_step, mpack_bindgen) or_return
 
-    obi.build(&ctx) or_return
+    obi.build(ctx) or_return
 
-    return ctx, nil
+    return nil
 }
 
 main :: proc() { 
@@ -101,7 +101,9 @@ main :: proc() {
     fmt.assertf(err == nil, "build initiation failed. (%v)", err)
     defer obi.deinit()
 
-    build_ctx, err = build("build")
-    fmt.assertf(err == nil, "build failed. (%v)\nTRACEBACK:\n%s\n", err, obi.blame(&build_ctx, err, allow_newlines=true))
-    
+    err = build("build")
+    if err != nil {
+        traceback := obi.uc_blame(err, allow_newlines=true)
+        fmt.panicf("Build failed. (%v)\nTRACEBACK:\n%s\n", err, traceback)    
+    }
 }

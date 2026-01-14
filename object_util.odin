@@ -1,6 +1,7 @@
 package obi
 
 import ia "intern_arena"
+import promise "promise"
 import "core:path/filepath"
 import "core:strings"
 
@@ -232,7 +233,7 @@ c_object_spec_to_subprocess :: proc(
     defer if err == nil do _backtrace()
 
     when ODIN_OS == .Windows {
-        if cl_path, cl_path_exists := ctx.windows.visual_studio_cl_path.?; cl_path_exists {
+        if cl_path, cl_path_exists := promise.get_ref(&ctx.windows.visual_studio_cl_path).?; cl_path_exists {
             maybe_msvc_optimization_level := get_maybe_equiv_c_optimization_level(_to_base_optimization_level(oc.optimization), MSVC_Optimization_Level)
         
             command_size := 1 // cl

@@ -2,6 +2,7 @@ package obi
 
 import subprocess "subprocess"
 import ia "intern_arena"
+import promise "promise"
 
 import "core:path/filepath"
 import "core:os/os2"
@@ -37,12 +38,12 @@ _which_cmake :: proc(ctx: ^Build_Context, priority: CMake_Program_Priority, call
             path, found = ta_subprocess_which("cmake", allocator=ia.allocator(&ctx.intern_arena), cwd=ctx.working_dir, search_local=true) or_return
             when ODIN_OS == .Windows {
                 if !found {
-                    path, found = ctx.windows.visual_studio_cmake_path.?
+                    path, found = promise.get_ref(&ctx.windows.visual_studio_cmake_path).?
                 }
             }
         case .Visual_Studio:
             when ODIN_OS == .Windows {
-                path, found = ctx.windows.visual_studio_cmake_path.?
+                path, found = promise.get_ref(&ctx.windows.visual_studio_cmake_path).?
             }
             if !found {
                 path, found = ta_subprocess_which("cmake", allocator=ia.allocator(&ctx.intern_arena), cwd=ctx.working_dir, search_local=true) or_return

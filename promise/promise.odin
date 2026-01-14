@@ -5,12 +5,14 @@ import "core:sync"
 import "core:thread"
 
 import "base:intrinsics"
+import "base:runtime"
 
 Promise :: struct($T: typeid) {
     data: ^T,
     allocator: mem.Allocator,
     mutex: sync.Mutex,
-    _terminate: bool
+    _terminate: bool,
+    _index: int
 }
 
 init :: proc(p: ^Promise($T), allocator := context.allocator) -> mem.Allocator_Error {
@@ -19,6 +21,7 @@ init :: proc(p: ^Promise($T), allocator := context.allocator) -> mem.Allocator_E
         p.data = new(T, allocator=p.allocator) or_return
         return nil
     }
+    return nil
 }
 
 terminate :: proc(p: ^Promise($T)) {
@@ -37,7 +40,7 @@ destroy :: proc(p: ^Promise($T)) -> mem.Allocator_Error {
     return nil
 }
 
-set :: proc(
+@private _set :: proc(
     p: ^Promise($T), 
     setter: #type proc(source: ^Promise(T), output: ^T, client_data: rawptr), 
     client_data: rawptr
@@ -47,7 +50,7 @@ set :: proc(
         setter: #type proc(^Promise(T),^T,rawptr),
         client_data: rawptr
     }
-    non_raw_data := new(_Data, allocator=p.allocator) or_return
+    non_raw_data := new(_Data, allocator=p.allocator)
     non_raw_data.p = p
     non_raw_data.setter = setter
     non_raw_data.client_data = client_data
@@ -56,9 +59,11 @@ set :: proc(
         context.allocator = task.allocator
         
         data := transmute(^_Data)task.data
-        if sync.guard(&data.p.mutex) && !should_terminate(data.p) {
-            data.setter(data.p, data.p.data, data.client_data)
-            terminate(data.p)
+        if sync.guard(&data.p.mutex) {
+            if !should_terminate(data.p) {
+                data.setter(data.p, data.p.data, data.client_data)
+                terminate(data.p)
+            }
         }
 
         free(task.data, allocator=data.p.allocator)
@@ -66,16 +71,18 @@ set :: proc(
     return tp, data
 }
 
-set_using_thread_pool :: proc(
+set :: proc(
     p: ^Promise($T), 
-    pool: ^thread.Pool, 
+    pool: ^Pool, 
     setter: #type proc(source: ^Promise(T), output: ^T, client_data: rawptr), 
     client_data: rawptr,
-    allocator := context.allocator,
-    user_index := 0
+    allocator := context.allocator
 ) {
-    tp, data := set(p, setter, client_data)
-    thread.pool_add_task(pool, allocator, tp, data, user_index=user_index)
+    @static user_index := 0
+    tp, data := _set(p, setter, client_data)
+    p._index = user_index
+    _pool_add_task(pool, allocator, tp, data, user_index=p._index)
+    user_index += 1
 }
 
 get_ref :: proc(
@@ -84,10 +91,103 @@ get_ref :: proc(
     if sync.guard(&p.mutex) {
         return p.data
     }
+    unimplemented()
 }
 
 get :: proc(
     p: ^Promise($T)
 ) -> T {
     return get_ref(p)^
+}
+
+Pool :: [size_of(thread.Pool) when thread.IS_SUPPORTED else 0]byte
+
+pool_thread_pool :: #force_inline proc(pool: ^Pool) -> ^thread.Pool {
+    when thread.IS_SUPPORTED {
+        return transmute(^thread.Pool)pool
+    } else {
+        return nil
+    }
+}
+pool_init :: #force_inline proc(pool: ^Pool, allocator: mem.Allocator, thread_count: int) {
+    when thread.IS_SUPPORTED {
+        thread.pool_init(pool_thread_pool(pool), allocator, thread_count)
+    }
+}
+@private _pool_add_task :: #force_inline proc(pool: ^Pool, allocator: mem.Allocator, procedure: thread.Task_Proc, data: rawptr, user_index: int = 0) {
+    when thread.IS_SUPPORTED {
+        thread.pool_add_task(pool_thread_pool(pool), allocator, procedure, data, user_index)
+    } else {
+        procedure(thread.Task{
+	    	procedure  = procedure,
+	    	data       = data,
+	    	user_index = user_index,
+	    	allocator  = allocator,
+	    })
+    }
+}
+pool_destroy :: #force_inline proc(pool: ^Pool) {
+    when thread.IS_SUPPORTED {
+        thread.pool_destroy(pool_thread_pool(pool))
+    }
+}
+pool_finish :: #force_inline proc(pool: ^Pool) {
+    when thread.IS_SUPPORTED {
+        thread.pool_finish(pool_thread_pool(pool))
+    }
+}
+pool_is_empty :: #force_inline proc(pool: ^Pool) -> bool {
+    when thread.IS_SUPPORTED {
+        return thread.pool_is_empty(pool_thread_pool(pool))
+    } else {
+        return true
+    }
+}
+pool_join :: #force_inline proc(pool: ^Pool) {
+    when thread.IS_SUPPORTED {
+        thread.pool_join(pool_thread_pool(pool))
+    }
+}
+pool_num_done :: #force_inline proc(pool: ^Pool) -> int {
+    when thread.IS_SUPPORTED {
+        return thread.pool_num_done(pool_thread_pool(pool))
+    } else {
+        return 0
+    }
+}
+pool_num_in_processing :: #force_inline proc(pool: ^Pool) -> int {
+    when thread.IS_SUPPORTED {
+        return thread.pool_num_in_processing(pool_thread_pool(pool))
+    } else {
+        return 0
+    }
+}
+pool_num_outstanding :: #force_inline proc(pool: ^Pool) -> int {
+    when thread.IS_SUPPORTED {
+        return thread.pool_num_outstanding(pool_thread_pool(pool))
+    } else {
+        return 0
+    }
+}
+pool_num_waiting :: #force_inline proc(pool: ^Pool) -> int {
+    when thread.IS_SUPPORTED {
+        return thread.pool_num_waiting(pool_thread_pool(pool))
+    } else {
+        return 0
+    }
+}
+pool_start :: #force_inline proc(pool: ^Pool) {
+    when thread.IS_SUPPORTED {
+        thread.pool_start(pool_thread_pool(pool))
+    }
+}
+pool_shutdown :: proc(pool: ^Pool, exit_code: int = 1) {
+    when thread.IS_SUPPORTED {
+        thread.pool_shutdown(pool_thread_pool(pool), exit_code)
+    }
+}
+pool_stop_all_tasks :: proc(pool: ^Pool, exit_code: int = 1) {
+    when thread.IS_SUPPORTED {
+        thread.pool_stop_all_tasks(pool_thread_pool(pool), exit_code)
+    }
 }

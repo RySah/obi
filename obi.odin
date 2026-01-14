@@ -239,8 +239,10 @@ Build_Context :: struct {
         visual_studio_releases: Promise(VS_Releases),
         visual_studio_cmake_path: Promise(Maybe(string)),
         visual_studio_cl_path: Promise(Maybe(string)),
-        visual_studio_lib_path: Promise(Maybe(string))
+        visual_studio_lib_path: Promise(Maybe(string)),
     },
+    // Promise pool
+    promise_pool: promise.Pool,
     // Data used internally
     _internal: struct {
         step_collection: [dynamic]^Step,
@@ -359,11 +361,13 @@ create_build_context :: proc(
     cache_file_system_path := DEFAULT_CACHE_FILE_SYSTEM_PATH, 
     c_export_path := DEFAULT_C_EXPORT_PATH,
     caller_location := #caller_location
-) -> (ctx: Build_Context, err: Error) {
+) -> (ctx: ^Build_Context, err: Error) {
     _start_trace()
     _trace(caller_location)
     _trace()
     defer if err == nil do _backtrace()
+
+    ctx = new(Build_Context, allocator=allocator) or_return
 
     ctx.allocator = allocator
     ctx.logger = logger
@@ -389,6 +393,8 @@ create_build_context :: proc(
 	}
     when thread.IS_SUPPORTED {
         if ctx._internal.user_args_options.job_count == 0 do ctx._internal.user_args_options.job_count = os.processor_core_count()
+    } else {
+        ctx._internal.user_args_options.job_count = 0
     }
     ia.init_growing(&ctx.intern_arena, ctx.allocator) or_return
     ctx.cache_file_system = cachefs.from(cache_file_system_path, ctx.allocator) or_return
@@ -397,79 +403,109 @@ create_build_context :: proc(
     ctx.stderr = subprocess.stderr()
     ctx.working_dir = ta_os2_get_working_directory(ia.allocator(&ctx.intern_arena)) or_return
     ctx.state_fingerprint=Default_State_Hasher
-    // when ODIN_OS == .Windows { 
-    //     // NOTE(rysah): This overall process without the usage of promises, TANKSSS performance (due to the json parsing libary or more likely microslop)
-    //     _Build_Context_Guard :: struct {
-    //         ctx: ^Build_Context,
-    //         mtx: sync.RW_Mutex
-    //     }
+    when ODIN_OS == .Windows {
+        promise.pool_init(&ctx.promise_pool, ctx.allocator, 1 + 4)
 
-    //     ctx_guard := _Build_Context_Guard{
-    //         ctx=ctx,
+        // NOTE(rysah): This overall process without the usage of promises, TANKSSS performance (due to the json parsing libary or more likely microslop)
+        _Init_Promise_Data :: struct {
+            err: ^VS_Error,
+            ctx: ^Build_Context
+        }
+        init_microslop_data := new(_Init_Promise_Data, allocator=ia.allocator(&ctx.intern_arena)) or_return
+        init_microslop_data.err = new(VS_Error, allocator=ia.allocator(&ctx.intern_arena)) or_return
+        init_microslop_data.ctx = ctx
 
-    //     }
-        
-    //     _Init_Promise_Data :: struct {
-    //         err: VS_Error,
-    //         ctx: ^Build_Context,
-    //         mtx: sync.Mutex
-    //     }
-    //     init_microslop_data := new(_Init_Promise_Data, allocator=ia.allocator(&ctx.intern_arena)) or_return
+        promise.init(&ctx.windows.visual_studio_releases, allocator=ia.allocator(&ctx.intern_arena)) or_return
+        promise.set(&ctx.windows.visual_studio_releases,
+            &ctx.promise_pool,
+            proc(source: ^Promise(VS_Releases), output: ^VS_Releases, client_data: rawptr) {
+                data := transmute(^_Init_Promise_Data)client_data
+                if promise.should_terminate(source) do return // Skip processing
+                output^, data.err^ = vs_get_release_infos(data.ctx)
+            },
+            init_microslop_data
+        )
 
-    //     promise.init(&ctx.windows.visual_studio_releases, allocator=ia.allocator(&ctx.intern_arena)) or_return
-    //     promise.set(&ctx.windows.visual_studio_releases, 
-    //         proc(source: ^Promise(VS_Releases), output: ^VS_Releases, client_data: rawptr) {
-    //             data := transmute(^_Init_Promise_Data)client_data
-    //             if sync.rw_mutex_guard(&data.mtx) {
-    //                 output^, data.err = vs_get_release_infos(data.ctx)
-    //             }
-    //         },
-    //         init_microslop_data
-    //     )
+        _Promise_Data :: struct {
+            err: ^VS_Error,
+            releases_promise: ^Promise(VS_Releases),
+            ctx: ^Build_Context,
+            mtx: sync.RW_Mutex
+        }
+        microslop_data := new(_Promise_Data, allocator=ia.allocator(&ctx.intern_arena)) or_return
+        microslop_data.err = init_microslop_data.err
+        microslop_data.releases_promise = &ctx.windows.visual_studio_releases
+        microslop_data.ctx = init_microslop_data.ctx
 
-    //     _Promise_Data :: struct {
-    //         err: VS_Error,
-    //         releases_promise: ^Promise(VS_Releases),
-    //         ctx: ^Build_Context,
-    //         mtx: 
-    //     }
+        _microslop_search :: proc(
+            ctx: ^Build_Context, 
+            p: ^Promise(Maybe(string)), 
+            microslop_data: ^_Promise_Data,
+            $NAME: string 
+        ) -> mem.Allocator_Error {
+            promise.init(p, allocator=ia.allocator(&ctx.intern_arena)) or_return
+            promise.set(p,
+                &ctx.promise_pool,
+                proc(source: ^Promise(Maybe(string)), output: ^Maybe(string), client_data: rawptr) {
+                    data := transmute(^_Promise_Data)client_data
+                    
+                    if promise.should_terminate(source) do return // Skip processing
+                    releases := promise.get(data.releases_promise)
 
-    //     promise.init(&ctx.windows.visual_studio_cmake_path, allocator=ia.allocator(&ctx.intern_arena)) or_return
-    //     promise.set(&ctx.windows.visual_studio_cmake_path,
-    //         proc(source: ^Promise(Maybe(string)), output: ^Maybe(string), client_data: rawptr) {
+                    if sync.rw_mutex_shared_guard(&data.mtx) {
+                        if data.err^ != nil {
+                            if data.err^ == VS_General_Error.Missing_Program { 
+                                if sync.rw_mutex_guard(&data.mtx) {
+                                    data.err^ = nil // This can be expected in some cases therefore no error should be raised to the user
+                                }
+                                return // Processing should still stop
+                            } else { // Significant error occured
+                                return
+                            }
+                        }
+                    }
 
-    //         },
-    //         microslop_data
-    //     )
+                    if promise.should_terminate(source) do return // Skip processing
 
-    //     vs_err: VS_Error
-    //     if ctx.windows.visual_studio_releases, vs_err = vs_get_release_infos(&ctx); vs_err == nil {
-    //         best_visual_studio_release := vs_get_best_release(ctx.windows.visual_studio_releases)
-            
-    //         found_entry: bool
-            
-    //         ctx.windows.visual_studio_cmake_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cmake", cwd=ctx.working_dir)
-    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-    //             if !found_entry do ctx.windows.visual_studio_cmake_path = nil
-    //         } else {
-    //             return ctx, vs_err
-    //         }
-    //         ctx.windows.visual_studio_cl_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "cl", cwd=ctx.working_dir)
-    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-    //             if !found_entry do ctx.windows.visual_studio_cl_path = nil
-    //         } else {
-    //             return ctx, vs_err
-    //         }
-    //         ctx.windows.visual_studio_lib_path, found_entry, vs_err = vs_which(&ctx, best_visual_studio_release^, "lib", cwd=ctx.working_dir)
-    //         if vs_err == VS_General_Error.Missing_Program || vs_err == nil {
-    //             if !found_entry do ctx.windows.visual_studio_lib_path = nil
-    //         } else {
-    //             return ctx, vs_err
-    //         }
-    //     } else if vs_err != VS_General_Error.Missing_Program {
-    //         return ctx, vs_err
-    //     }
-    // }
+                    best_release := vs_get_best_release(releases) // TODO(rysah): Perhaps have this be a promise aswell?
+
+                    if promise.should_terminate(source) do return // Skip processing
+
+                    sync.rw_mutex_lock(&data.mtx)
+                    path: string
+                    found: bool
+                    path, found, data.err^ = vs_which(data.ctx, best_release^, NAME, cwd=data.ctx.working_dir)
+                    sync.rw_mutex_unlock(&data.mtx)
+
+                    if promise.should_terminate(source) do return // Skip processing
+
+                    if sync.rw_mutex_shared_guard(&data.mtx) {
+                        if data.err^ == nil || data.err^ == VS_General_Error.Missing_Program {
+                            if found {
+                                output^ = path
+                            } else {
+                                output^ = nil
+                            }
+                        } else {
+                            return
+                        }
+                    }
+                },
+                microslop_data
+            )
+            return nil
+        }
+
+        _microslop_search(ctx, &ctx.windows.visual_studio_cmake_path, microslop_data, "cmake") or_return
+        _microslop_search(ctx, &ctx.windows.visual_studio_cl_path, microslop_data, "cl") or_return
+        _microslop_search(ctx, &ctx.windows.visual_studio_lib_path, microslop_data, "lib") or_return
+
+        if microslop_data.err^ != nil || microslop_data.err^ != VS_General_Error.Missing_Program {
+            return ctx, microslop_data.err^
+        }
+
+        promise.pool_start(&ctx.promise_pool)
+    }
     ctx._internal.step_collection = make([dynamic]^Step, ctx.allocator) or_return
     return ctx, nil
 }
@@ -486,6 +522,17 @@ destroy_build_context :: proc(ctx: ^Build_Context, caller_location := #caller_lo
 
     log.infof("[START] Destroying build context.")
     defer if err != nil do log.errorf("[FAIL] Destroying build context.")
+
+    when ODIN_OS == .Windows {
+        promise.destroy(&ctx.windows.visual_studio_releases) or_return
+        promise.destroy(&ctx.windows.visual_studio_cmake_path) or_return
+        promise.destroy(&ctx.windows.visual_studio_cl_path) or_return
+        promise.destroy(&ctx.windows.visual_studio_lib_path) or_return
+    }
+
+    log.debugf("[START] Destroying build context promise pool.")
+    promise.pool_destroy(&ctx.promise_pool)
+    log.debugf("[DONE] Destroying build context promise pool.")
 
     log.debugf("[START] Destroying build context file system.")
     cachefs.destroy(&ctx.cache_file_system) or_return
